@@ -114,7 +114,7 @@
         <div class="flex justify-between gap-2 mt-1">
             <button id="btnToggle" class="btn-astro flex-1 text-xs">START STACK</button>
             <button id="btnReset" class="btn-astro flex-1 text-xs">RESET</button>
-            <button id="btnSave" class="btn-astro flex-1 text-xs">ZAPISZ</button>
+            <button id="btnSave" class="btn-astro flex-1 text-xs">ZAPISZ TIFF</button>
         </div>
     </div>
 
@@ -172,7 +172,7 @@
         
         <div class="overflow-y-auto flex flex-col gap-3 pb-8">
             <p class="text-[10px] mb-2">
-                Zredukuj szum matrycy (Dark/Bias) i winietowanie (Flat).
+                Zredukuj szum matrycy (Dark/Bias) i winietowanie (Flat). Klatki zapisywane są jako bezstratne pliki PNG, aby przeglądarka mogła je ponownie poprawnie wczytać.
             </p>
 
             <!-- DARK -->
@@ -281,17 +281,14 @@
             try {
                 statStatus.innerText = "ŁĄCZENIE Z KAMERĄ...";
                 
-                // Krok 1: Podstawowe zapytanie by wymusić zgodę użytkownika i zainicjować dostęp
                 let stream = await navigator.mediaDevices.getUserMedia({
                     video: { facingMode: "environment" },
                     audio: false
                 });
 
-                // Krok 2: Pobranie fizycznych obiektywów
                 const devices = await navigator.mediaDevices.enumerateDevices();
                 const videoInputs = devices.filter(d => d.kind === 'videoinput');
                 
-                // Szukamy głównego obiektywu (odrzucamy szeroki kąt i macro, aby wymusić sztywno główny obiektyw)
                 let mainCamera = videoInputs.find(d => 
                     d.label.toLowerCase().includes('back') && 
                     !d.label.toLowerCase().includes('ultra') && 
@@ -299,14 +296,14 @@
                     !d.label.toLowerCase().includes('tele')
                 ) || videoInputs.find(d => d.label.toLowerCase().includes('back'));
 
-                // Krok 3: Jeśli znaleziono konkretny obiektyw, restartujemy zablokowany na nim strumień
                 if (mainCamera) {
                     stream.getTracks().forEach(t => t.stop());
                     stream = await navigator.mediaDevices.getUserMedia({
                         video: {
                             deviceId: { exact: mainCamera.deviceId },
-                            width: { ideal: 1280 },
-                            height: { ideal: 720 },
+                            // ZMIANA: Żądamy matrycy ok 12 MP zamiast 720p
+                            width: { ideal: 4000 },
+                            height: { ideal: 3000 },
                             advanced: [
                                 { focusMode: "continuous" },
                                 { whiteBalanceMode: "manual", colorTemperature: 5000 }
@@ -333,9 +330,8 @@
                     offscreenCanvas.height = canvasHeight;
                     accumulator = new Float32Array(canvasWidth * canvasHeight * 4);
                     
-                    statStatus.innerText = "GOTOWY (PODGLĄD)";
+                    statStatus.innerText = `GOTOWY (${canvasWidth}x${canvasHeight})`;
                     
-                    // Wymuś test sprzętowych ustawięń na start
                     applyCameraSettings();
                     requestAnimationFrame(processLoop);
                 };
@@ -390,32 +386,36 @@
         document.getElementById('sliderExp').addEventListener('input', applyCameraSettings);
         document.getElementById('sliderGain').addEventListener('input', applyCameraSettings);
 
-        // Zablokuj / Odblokuj Focus
+        // Zablokuj / Odblokuj Focus z inteligentnym Fallbackiem
         btnLockFocus.addEventListener('click', async () => {
             if (!videoTrack) return;
-            isFocusLocked = !isFocusLocked;
             try {
-                if (isFocusLocked) {
-                    // Pobierz dokładną aktualną odległość ogniskowania
+                if (!isFocusLocked) {
                     const settings = videoTrack.getSettings();
-                    let lockConstraints = { focusMode: "manual" };
                     
-                    // Jeżeli system na to pozwala, narzuć mu utrzymanie obecnej dokładnej fizycznej pozycji
-                    if (settings.focusDistance !== undefined) {
-                        lockConstraints.focusDistance = settings.focusDistance;
+                    // Krok 1: Próba zablokowania ostrości dokładnie na obecnym dystansie fizycznym
+                    try {
+                        if (settings.focusDistance !== undefined) {
+                            await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual", focusDistance: settings.focusDistance }] });
+                        } else {
+                            throw new Error("Brak wsparcia dla odczytu focusDistance");
+                        }
+                    } catch (e) {
+                        // Krok 2 (Fallback): Sama blokada trybu na manualny (zwykle utrzymuje aktualną pozycję silniczka w Pixelach/Samsungach)
+                        await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] });
                     }
                     
-                    await videoTrack.applyConstraints({ advanced: [lockConstraints] });
-                    
+                    isFocusLocked = true;
                     btnLockFocus.innerText = "ODBLOKUJ FOCUS";
                     btnLockFocus.classList.add('active');
                 } else {
                     await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+                    isFocusLocked = false;
                     btnLockFocus.innerText = "ZABLOKUJ FOCUS";
                     btnLockFocus.classList.remove('active');
                 }
             } catch (e) {
-                alert("Twój telefon nie wspiera manualnego blokowania ostrości.");
+                alert("Twój telefon systemowo odrzuca prośby o zablokowanie ostrości (ograniczenie przeglądarki).");
                 isFocusLocked = false;
                 btnLockFocus.innerText = "ZABLOKUJ FOCUS";
                 btnLockFocus.classList.remove('active');
@@ -429,13 +429,14 @@
                 setTimeout(async () => {
                     try {
                         if (isFocusLocked) {
-                            // Jeżeli był zablokowany, aktualizujemy blokadę do nowej uzyskanej pozycji po single-shot
                             const settings = videoTrack.getSettings();
-                            let lockConstraints = { focusMode: "manual" };
                             if (settings.focusDistance !== undefined) {
-                                lockConstraints.focusDistance = settings.focusDistance;
+                                await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual", focusDistance: settings.focusDistance }] }).catch(()=> {
+                                    videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] });
+                                });
+                            } else {
+                                await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] });
                             }
-                            await videoTrack.applyConstraints({ advanced: [lockConstraints] });
                         } else {
                             await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
                         }
@@ -448,10 +449,11 @@
             offscreenCtx.drawImage(video, 0, 0, canvasWidth, canvasHeight);
             const data = offscreenCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
             let sum = 0;
-            for(let i=0; i<data.length; i+=4) {
+            // Co czwarty piksel dla wydajności
+            for(let i=0; i<data.length; i+=16) {
                 sum += (data[i] + data[i+1] + data[i+2]) / 3;
             }
-            const mean = sum / (canvasWidth * canvasHeight);
+            const mean = sum / (canvasWidth * canvasHeight / 4);
             
             if (mean < 30) {
                 softwareGain = Math.min(10, softwareGain + 1.0);
@@ -475,10 +477,10 @@
                 offscreenCtx.drawImage(video, 0, 0, canvasWidth, canvasHeight);
                 const data = offscreenCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
                 let sum = 0;
-                for(let j=0; j<data.length; j+=4) {
+                for(let j=0; j<data.length; j+=16) {
                     sum += data[j]*0.299 + data[j+1]*0.587 + data[j+2]*0.114;
                 }
-                let mean = sum / (canvasWidth * canvasHeight);
+                let mean = sum / (canvasWidth * canvasHeight / 4);
                 if (Math.abs(mean - targetMean) < tolerance) break;
                 
                 let ratio = targetMean / Math.max(mean, 1);
@@ -496,15 +498,9 @@
         async function captureCalibrationFrame(type) {
             if (!videoTrack) return;
 
-            // Zabezpieczenie ostrości na czas kalibracji - pobieramy jej obecny stan fizyczny i trzymamy go sztywno
             let wasFocusLockedBeforeCalib = isFocusLocked;
             if (!isFocusLocked) {
-                try { 
-                    const settings = videoTrack.getSettings();
-                    let lockConstraints = { focusMode: "manual" };
-                    if (settings.focusDistance !== undefined) lockConstraints.focusDistance = settings.focusDistance;
-                    await videoTrack.applyConstraints({ advanced: [lockConstraints] }); 
-                } catch(e) {}
+                try { await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] }); } catch(e) {}
             }
 
             let numFrames = 10;
@@ -531,8 +527,6 @@
             }
 
             let calibAcc = new Float32Array(canvasWidth * canvasHeight * 4);
-            
-            // Programowa symulacja na czas kalibracji
             let activeDigitalGain = hwConstraintsSupported ? 1.0 : (currentIso / 800) * (currentExp / 30);
 
             for(let f=0; f<numFrames; f++) {
@@ -540,7 +534,6 @@
                 offscreenCtx.drawImage(video, 0, 0, canvasWidth, canvasHeight);
                 const data = offscreenCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
                 for(let i=0; i<data.length; i++) {
-                    // Mnożymy kalibrację, by odpowiadała widocznemu obrazowi (jeśli używany jest cyfrowy zysk)
                     calibAcc[i] += data[i] * activeDigitalGain;
                 }
                 statStatus.innerText = `${type.toUpperCase()} (${f+1}/${numFrames})`;
@@ -563,7 +556,6 @@
                 try { await videoTrack.applyConstraints({ advanced: [{ exposureMode: "manual", exposureTime: originalExp, iso: currentIso }] }); } catch(e) {}
             }
 
-            // Przywróć focus do stanu z przed kalibracji, O ILE nie był ręcznie zablokowany
             if (!wasFocusLockedBeforeCalib) {
                 try { await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch(e) {}
             }
@@ -576,6 +568,7 @@
             const tCtx = tempCanvas.getContext('2d');
             tCtx.putImageData(new ImageData(finalData, canvasWidth, canvasHeight), 0, 0);
             
+            // Pliki kalibracyjne ZAWSZE PNG dla kompatybilności przeglądarki z plikami File
             const link = document.createElement('a');
             link.download = `${type}_ISO${currentIso}_${originalExp}ms.png`;
             link.href = tempCanvas.toDataURL('image/png');
@@ -649,9 +642,9 @@
         function calculateCentroid(lumaData, modeParams) {
             let sumX = 0, sumY = 0, count = 0;
             const threshold = modeParams.threshold;
-            for (let y = 0; y < canvasHeight; y += 2) {
+            for (let y = 0; y < canvasHeight; y += 4) {
                 let rowOffset = y * canvasWidth;
-                for (let x = 0; x < canvasWidth; x += 2) {
+                for (let x = 0; x < canvasWidth; x += 4) {
                     if (lumaData[rowOffset + x] > threshold) { sumX += x; sumY += y; count++; }
                 }
             }
@@ -677,17 +670,20 @@
             let half = Math.floor(size / 2);
             let bestCoarseX = 0, bestCoarseY = 0, coarseMinSAD = Infinity;
             
-            for (let dy = -searchRadius; dy <= searchRadius; dy += 2) {
-                for (let dx = -searchRadius; dx <= searchRadius; dx += 2) {
+            // Subsampling poszukiwań przy 12 MP
+            let step = canvasWidth > 2000 ? 4 : 2;
+
+            for (let dy = -searchRadius; dy <= searchRadius; dy += step) {
+                for (let dx = -searchRadius; dx <= searchRadius; dx += step) {
                     let sad = 0, pIdx = 0;
-                    for (let py = 0; py < size; py++) {
+                    for (let py = 0; py < size; py+=2) {
                         let y = cy + dy - half + py;
                         let yValid = y >= 0 && y < canvasHeight;
                         let rowOffset = y * canvasWidth;
-                        for (let px = 0; px < size; px++) {
+                        for (let px = 0; px < size; px+=2) {
                             let x = cx + dx - half + px;
                             let luma = (yValid && x >= 0 && x < canvasWidth) ? lumaData[rowOffset + x] : 0;
-                            sad += Math.abs(luma - refPatch[pIdx++]);
+                            sad += Math.abs(luma - refPatch[py * size + px]);
                         }
                         if (sad >= coarseMinSAD) break;
                     }
@@ -696,8 +692,8 @@
             }
 
             let bestSAD = Infinity, bestDx = 0, bestDy = 0;
-            for (let dy = bestCoarseY - 1; dy <= bestCoarseY + 1; dy++) {
-                for (let dx = bestCoarseX - 1; dx <= bestCoarseX + 1; dx++) {
+            for (let dy = bestCoarseY - 2; dy <= bestCoarseY + 2; dy++) {
+                for (let dx = bestCoarseX - 2; dx <= bestCoarseX + 2; dx++) {
                     let sad = 0, pIdx = 0;
                     for (let py = 0; py < size; py++) {
                         let y = cy + dy - half + py;
@@ -728,7 +724,6 @@
                 lumaFrame = new Uint8Array(canvasWidth * canvasHeight);
             }
 
-            // GŁÓWNA ZMIANA: TotalGain uwzględnia programową symulację, jeśli HW zawodzi.
             let totalGain = softwareGain;
             if (!hwConstraintsSupported) {
                 let simulatedIso = currentIso / 800;
@@ -740,7 +735,6 @@
             for (let i = 0; i < rawData.length; i += 4) {
                 for (let c = 0; c < 3; c++) { 
                     let val = rawData[i + c];
-                    // Podbijamy obraz sprzętowo LUB programowo na samym początku przed kalibracją
                     val *= totalGain;
 
                     if (calibData.bias) val -= calibData.bias[i + c];
@@ -832,6 +826,77 @@
             ctx.putImageData(renderData, 0, 0);
         }
 
+        // --- NATYWNY GENERATOR PLIKÓW TIFF (RGB BEZSTRATNY) ---
+        function createTiffBlob(canvasEl) {
+            const ctxTiff = canvasEl.getContext('2d');
+            const imgData = ctxTiff.getImageData(0, 0, canvasEl.width, canvasEl.height);
+            const data = imgData.data;
+            const w = canvasEl.width;
+            const h = canvasEl.height;
+            const rgbSize = w * h * 3;
+
+            const offsetIFD = 8;
+            const entriesCount = 9;
+            const ifdSize = 2 + (entriesCount * 12) + 4;
+            const offsetBPS = offsetIFD + ifdSize; 
+            const offsetPixels = offsetBPS + 6; 
+
+            const buffer = new ArrayBuffer(offsetPixels + rgbSize);
+            const view = new DataView(buffer);
+            const u8 = new Uint8Array(buffer);
+
+            // Nagłówek 'II' (Little Endian)
+            view.setUint16(0, 0x4949, true);
+            view.setUint16(2, 42, true);
+            view.setUint32(4, offsetIFD, true);
+
+            // Katalog IFD
+            view.setUint16(offsetIFD, entriesCount, true);
+            let pos = offsetIFD + 2;
+
+            function writeEntry(tag, type, count, value) {
+                view.setUint16(pos, tag, true);
+                view.setUint16(pos + 2, type, true);
+                view.setUint32(pos + 4, count, true);
+                if (type === 3 && count === 1) { // SHORT
+                    view.setUint16(pos + 8, value, true);
+                    view.setUint16(pos + 10, 0, true);
+                } else if (type === 4 && count === 1) { // LONG
+                    view.setUint32(pos + 8, value, true);
+                } else { // Offset
+                    view.setUint32(pos + 8, value, true);
+                }
+                pos += 12;
+            }
+
+            writeEntry(256, 4, 1, w); // ImageWidth
+            writeEntry(257, 4, 1, h); // ImageLength
+            writeEntry(258, 3, 3, offsetBPS); // BitsPerSample offset
+            writeEntry(259, 3, 1, 1); // Compression (Brak kompresji)
+            writeEntry(262, 3, 1, 2); // PhotometricInterpretation (RGB)
+            writeEntry(273, 4, 1, offsetPixels); // StripOffsets
+            writeEntry(277, 3, 1, 3); // SamplesPerPixel
+            writeEntry(278, 4, 1, h); // RowsPerStrip
+            writeEntry(279, 4, 1, rgbSize); // StripByteCounts
+
+            view.setUint32(pos, 0, true); // Koniec IFD
+
+            // Ustawienia kanałów (8, 8, 8)
+            view.setUint16(offsetBPS, 8, true);
+            view.setUint16(offsetBPS + 2, 8, true);
+            view.setUint16(offsetBPS + 4, 8, true);
+
+            // Kopiowanie pikseli pomijając kanał Alpha (waga/szybkość)
+            let p = offsetPixels;
+            for (let i = 0; i < data.length; i += 4) {
+                u8[p++] = data[i];     // R
+                u8[p++] = data[i+1];   // G
+                u8[p++] = data[i+2];   // B
+            }
+
+            return new Blob([buffer], { type: 'image/tiff' });
+        }
+
         // --- OBSŁUGA UI ---
         
         btnToggle.addEventListener('click', () => {
@@ -868,10 +933,21 @@
         document.getElementById('btnSave').addEventListener('click', () => {
             if (frameCount === 0) return alert("Brak klatek do zapisania!");
             if (isStacking) renderAccumulator();
-            const dataUrl = displayCanvas.toDataURL('image/png');
-            const link = document.createElement('a');
-            link.download = `astro_stack_${modeSelect.value}_${frameCount}klatek.png`;
-            link.href = dataUrl; link.click();
+            
+            // Zapis bezstratnego TIFFa wygenerowanego w kodzie
+            statStatus.innerText = "GENEROWANIE TIFF...";
+            setTimeout(() => {
+                const tiffBlob = createTiffBlob(displayCanvas);
+                const dataUrl = URL.createObjectURL(tiffBlob);
+                
+                const link = document.createElement('a');
+                link.download = `astro_stack_${modeSelect.value}_${frameCount}klatek.tiff`;
+                link.href = dataUrl; 
+                link.click();
+                
+                URL.revokeObjectURL(dataUrl); // Czyszczenie pamięci po zapisie
+                statStatus.innerText = "ZAPISANO";
+            }, 100);
         });
 
         // Modale
