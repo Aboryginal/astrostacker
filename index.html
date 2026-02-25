@@ -17,8 +17,9 @@
             background-color: var(--astro-bg);
             color: var(--astro-red);
             font-family: monospace;
-            overflow: hidden;
-            touch-action: none;
+            margin: 0;
+            padding: 0;
+            overscroll-behavior: none; /* Zapobiega odświeżaniu przez pociągnięcie na mobile */
         }
         .text-astro { color: var(--astro-red); }
         .border-astro { border-color: var(--astro-red); }
@@ -29,11 +30,10 @@
             background-color: transparent;
             border: 1px solid var(--astro-red);
             color: var(--astro-red);
-            padding: 0.5rem;
+            padding: 0.6rem 0.4rem;
             border-radius: 0.25rem;
             text-transform: uppercase;
             font-weight: bold;
-            font-size: 0.75rem;
             transition: all 0.2s;
             text-align: center;
             cursor: pointer;
@@ -42,9 +42,21 @@
         .btn-astro.active { background-color: var(--astro-red); color: black; }
         .btn-astro:disabled { opacity: 0.3; cursor: not-allowed; }
         
-        select.btn-astro, input[type="range"] { appearance: none; background-color: var(--astro-bg); outline: none; }
+        select.btn-astro { 
+            appearance: none; 
+            background-color: var(--astro-bg); 
+            outline: none; 
+        }
+        
+        /* Naprawa suwaków dla ekranów dotykowych */
+        input[type="range"] { 
+            appearance: none; 
+            background-color: var(--astro-bg); 
+            outline: none; 
+            touch-action: manipulation; 
+        }
         input[type="range"]::-webkit-slider-thumb {
-            appearance: none; width: 15px; height: 15px; background: var(--astro-red); cursor: pointer; border-radius: 50%;
+            appearance: none; width: 20px; height: 20px; background: var(--astro-red); cursor: pointer; border-radius: 50%;
         }
         input[type="range"]::-webkit-slider-runnable-track {
             width: 100%; height: 2px; background: var(--astro-dark-red);
@@ -60,10 +72,10 @@
         .modal.active { display: flex; }
     </style>
 </head>
-<body class="w-screen h-screen flex flex-col relative">
+<body class="w-full h-[100dvh] flex flex-col relative overflow-hidden">
 
-    <!-- Kontener na obraz -->
-    <div class="flex-1 relative flex items-center justify-center bg-black">
+    <!-- Kontener na obraz (zajmuje elastycznie dostępną przestrzeń na górze) -->
+    <div class="flex-1 relative flex items-center justify-center bg-black touch-none overflow-hidden">
         <video id="videoElement" autoplay playsinline></video>
         <canvas id="displayCanvas" class="w-full h-full object-contain"></canvas>
         
@@ -79,43 +91,49 @@
         </div>
     </div>
 
-    <!-- Panel Główny (Dół) -->
-    <div class="absolute bottom-0 left-0 w-full p-2 flex flex-col gap-2 pb-6 z-10" style="background-color: var(--astro-panel);">
+    <!-- Panel Główny (Dół - elastyczny, scrollowany na bardzo małych ekranach) -->
+    <div class="w-full p-2 flex flex-col gap-2 shrink-0 border-t border-red-900 overflow-y-auto max-h-[45dvh] z-10 bg-[rgba(15,0,0,0.95)]">
         <div class="flex justify-between text-[10px] sm:text-xs font-bold border-b border-red-900 pb-1">
             <div>KLATKI: <span id="stat-frames">0</span></div>
             <div>STATUS: <span id="stat-status" class="animate-pulse">OCZEKIWANIE</span></div>
             <div>ODCHYŁKA: <span id="stat-offset">dx:0 dy:0</span></div>
         </div>
 
-        <div class="grid grid-cols-4 gap-1">
-            <button id="btnSettings" class="btn-astro">USTAWIENIA KAMERY</button>
-            <button id="btnCalib" class="btn-astro">KALIBRACJA (D/F/B)</button>
-            <select id="modeSelect" class="btn-astro col-span-2">
-                <option value="planet">Tryb: Planety</option>
-                <option value="moon">Tryb: Księżyc</option>
-                <option value="dso">Tryb: DSO / Gwiazdy</option>
-            </select>
+        <!-- Przebudowany Grid dla Mobile -->
+        <div class="grid grid-cols-2 gap-2">
+            <button id="btnSettings" class="btn-astro text-xs">USTAWIENIA</button>
+            <button id="btnCalib" class="btn-astro text-xs">KALIBRACJA</button>
         </div>
+        
+        <select id="modeSelect" class="btn-astro w-full text-xs">
+            <option value="planet">Tryb: Planety (Wysoki próg)</option>
+            <option value="moon">Tryb: Księżyc (Średni próg)</option>
+            <option value="dso">Tryb: DSO / Gwiazdy (Niski próg)</option>
+        </select>
 
-        <div class="flex justify-between gap-1">
-            <button id="btnToggle" class="btn-astro flex-1 text-sm">START STACK</button>
-            <button id="btnReset" class="btn-astro flex-1">RESET</button>
-            <button id="btnSave" class="btn-astro flex-1">ZAPISZ TIFF(PNG)</button>
+        <div class="flex justify-between gap-2 mt-1">
+            <button id="btnToggle" class="btn-astro flex-1 text-xs">START STACK</button>
+            <button id="btnReset" class="btn-astro flex-1 text-xs">RESET</button>
+            <button id="btnSave" class="btn-astro flex-1 text-xs">ZAPISZ</button>
         </div>
     </div>
 
     <!-- MODAL: Ustawienia Kamery -->
     <div id="modalSettings" class="modal">
-        <div class="flex justify-between items-center border-b border-red-900 pb-2 mb-4">
+        <div class="flex justify-between items-center border-b border-red-900 pb-2 mb-4 shrink-0">
             <h2 class="font-bold text-lg">USTAWIENIA KAMERY</h2>
-            <button class="btn-astro close-modal">ZAMKNIJ</button>
+            <button class="btn-astro close-modal py-1 px-3">ZAMKNIJ</button>
         </div>
         
-        <div class="flex flex-col gap-4">
+        <div class="flex flex-col gap-5 overflow-y-auto pb-8">
+            <p id="hw-warning" class="text-xs text-yellow-500 font-bold hidden bg-yellow-900 bg-opacity-30 p-2 rounded">
+                Uwaga: Telefon odrzucił sprzętowe parametry. Aplikacja używa teraz bezstratnej symulacji programowej dla ISO i Migawki (Digital Gain).
+            </p>
+
             <div>
                 <label class="flex justify-between text-xs mb-1">
-                    <span>Czułość (ISO / Gain)</span>
-                    <span id="valIso">Auto</span>
+                    <span>Czułość (ISO / Zysk)</span>
+                    <span id="valIso">800</span>
                 </label>
                 <input type="range" id="sliderIso" min="100" max="3200" step="100" value="800" class="w-full">
             </div>
@@ -123,7 +141,7 @@
             <div>
                 <label class="flex justify-between text-xs mb-1">
                     <span>Migawka (Czas ekspozycji)</span>
-                    <span id="valExp">Auto</span>
+                    <span id="valExp">30ms</span>
                 </label>
                 <input type="range" id="sliderExp" min="1" max="1000" step="10" value="30" class="w-full">
                 <span class="text-[10px] opacity-50">Wartość w milisekundach (np. 33ms = ~1/30s)</span>
@@ -131,75 +149,72 @@
 
             <div>
                 <label class="flex justify-between text-xs mb-1">
-                    <span>Cyfrowe Wzmocnienie (Software Gain)</span>
+                    <span>Mnożnik cyfrowy (Dodatkowy Gain)</span>
                     <span id="valGain">1.0x</span>
                 </label>
                 <input type="range" id="sliderGain" min="1" max="10" step="0.1" value="1" class="w-full">
-                <span class="text-[10px] opacity-50">Jeśli przeglądarka blokuje HW ISO</span>
             </div>
 
             <div class="grid grid-cols-2 gap-2 mt-4">
-                <button id="btnAutoParams" class="btn-astro">AUTO PARAMETRY</button>
-                <button id="btnHwFocus" class="btn-astro">HW AUTOFOCUS (Smartfon)</button>
+                <button id="btnAutoParams" class="btn-astro text-xs">AUTO PARAMETRY</button>
+                <button id="btnHwFocus" class="btn-astro text-xs">HW AUTOFOCUS</button>
             </div>
-            
-            <p class="text-[10px] text-red-400 mt-4 text-center">
-                * Kontrola sprzętowa ISO/Migawki zależy od przeglądarki. Może nie działać na iOS Safari.
-            </p>
         </div>
     </div>
 
     <!-- MODAL: Kalibracja -->
     <div id="modalCalib" class="modal">
-        <div class="flex justify-between items-center border-b border-red-900 pb-2 mb-4">
-            <h2 class="font-bold text-lg">KLATKI KALIBRACYJNE</h2>
-            <button class="btn-astro close-modal">ZAMKNIJ</button>
+        <div class="flex justify-between items-center border-b border-red-900 pb-2 mb-4 shrink-0">
+            <h2 class="font-bold text-lg">KALIBRACJA MATRYCY</h2>
+            <button class="btn-astro close-modal py-1 px-3">ZAMKNIJ</button>
         </div>
         
-        <p class="text-xs mb-4">
-            Twórz klatki, aby zredukować szum i winietowanie. Ustaw ISO i Migawkę PRZED stworzeniem klatek.
-        </p>
+        <div class="overflow-y-auto flex flex-col gap-3 pb-8">
+            <p class="text-[10px] mb-2">
+                Zredukuj szum matrycy (Dark/Bias) i winietowanie (Flat).
+            </p>
 
-        <!-- DARK -->
-        <div class="border border-red-900 p-2 mb-2 rounded flex flex-col gap-2">
-            <div class="flex justify-between items-center">
-                <span class="font-bold">DARK (Zakryj teleskop, 40 kl)</span>
-                <span id="statusDark" class="text-[10px]">Brak</span>
+            <!-- DARK -->
+            <div class="border border-red-900 p-2 rounded flex flex-col gap-2">
+                <div class="flex justify-between items-center">
+                    <span class="font-bold text-xs">DARK (Zakryj teleskop, 40kl)</span>
+                    <span id="statusDark" class="text-[10px] text-gray-500">Brak</span>
+                </div>
+                <div class="flex gap-2">
+                    <button id="btnCreateDark" class="btn-astro flex-1 text-[10px]">NAGRAJ</button>
+                    <button id="btnLoadDark" class="btn-astro flex-1 text-[10px]">WCZYTAJ</button>
+                    <input type="file" id="fileDark" accept="image/png" class="hidden">
+                </div>
             </div>
-            <div class="flex gap-2">
-                <button id="btnCreateDark" class="btn-astro flex-1">NAGRAJ DARK</button>
-                <button id="btnLoadDark" class="btn-astro flex-1">WCZYTAJ</button>
-                <input type="file" id="fileDark" accept="image/png" class="hidden">
+
+            <!-- BIAS -->
+            <div class="border border-red-900 p-2 rounded flex flex-col gap-2">
+                <div class="flex justify-between items-center">
+                    <span class="font-bold text-xs">BIAS (Zakryj, min. czas, 16kl)</span>
+                    <span id="statusBias" class="text-[10px] text-gray-500">Brak</span>
+                </div>
+                <div class="flex gap-2">
+                    <button id="btnCreateBias" class="btn-astro flex-1 text-[10px]">NAGRAJ</button>
+                    <button id="btnLoadBias" class="btn-astro flex-1 text-[10px]">WCZYTAJ</button>
+                    <input type="file" id="fileBias" accept="image/png" class="hidden">
+                </div>
             </div>
+
+            <!-- FLAT -->
+            <div class="border border-red-900 p-2 rounded flex flex-col gap-2">
+                <div class="flex justify-between items-center">
+                    <span class="font-bold text-xs">FLAT (Jasne tło, auto-50%, 32kl)</span>
+                    <span id="statusFlat" class="text-[10px] text-gray-500">Brak</span>
+                </div>
+                <div class="flex gap-2">
+                    <button id="btnCreateFlat" class="btn-astro flex-1 text-[10px]">NAGRAJ</button>
+                    <button id="btnLoadFlat" class="btn-astro flex-1 text-[10px]">WCZYTAJ</button>
+                    <input type="file" id="fileFlat" accept="image/png" class="hidden">
+                </div>
+            </div>
+
+            <button id="btnClearCalib" class="btn-astro mt-2 border-red-500 text-red-500 text-xs">WYCZYŚĆ PLIKI KALIBRACYJNE</button>
         </div>
-
-        <!-- BIAS -->
-        <div class="border border-red-900 p-2 mb-2 rounded flex flex-col gap-2">
-            <div class="flex justify-between items-center">
-                <span class="font-bold">BIAS (Zakryj, auto-min czas, 16 kl)</span>
-                <span id="statusBias" class="text-[10px]">Brak</span>
-            </div>
-            <div class="flex gap-2">
-                <button id="btnCreateBias" class="btn-astro flex-1">NAGRAJ BIAS</button>
-                <button id="btnLoadBias" class="btn-astro flex-1">WCZYTAJ</button>
-                <input type="file" id="fileBias" accept="image/png" class="hidden">
-            </div>
-        </div>
-
-        <!-- FLAT -->
-        <div class="border border-red-900 p-2 mb-2 rounded flex flex-col gap-2">
-            <div class="flex justify-between items-center">
-                <span class="font-bold">FLAT (Równomierne tło, auto-50%, 32 kl)</span>
-                <span id="statusFlat" class="text-[10px]">Brak</span>
-            </div>
-            <div class="flex gap-2">
-                <button id="btnCreateFlat" class="btn-astro flex-1">NAGRAJ FLAT</button>
-                <button id="btnLoadFlat" class="btn-astro flex-1">WCZYTAJ</button>
-                <input type="file" id="fileFlat" accept="image/png" class="hidden">
-            </div>
-        </div>
-
-        <button id="btnClearCalib" class="btn-astro mt-4 border-red-500 text-red-500">WYCZYŚĆ PLIKI KALIBRACYJNE</button>
     </div>
 
     <script>
@@ -210,6 +225,7 @@
         
         let videoTrack = null;
         let capabilities = null;
+        let hwConstraintsSupported = false; // Detekcja wsparcia dla API
         
         let isStacking = false;
         let isPaused = false;
@@ -255,6 +271,7 @@
         const statStatus = document.getElementById('stat-status');
         const statFocus = document.getElementById('stat-focus');
         const modeSelect = document.getElementById('modeSelect');
+        const hwWarning = document.getElementById('hw-warning');
 
         // --- INICJALIZACJA KAMERY ---
         async function initCamera() {
@@ -266,8 +283,8 @@
                         width: { ideal: 1280 },
                         height: { ideal: 720 },
                         advanced: [
-                            { focusMode: "continuous" }, // Próba włączenia ciągłego AF na start
-                            { whiteBalanceMode: "manual", colorTemperature: 5000 } // Neutralny i zablokowany Balans Bieli
+                            { focusMode: "continuous" },
+                            { whiteBalanceMode: "manual", colorTemperature: 5000 }
                         ]
                     },
                     audio: false
@@ -275,7 +292,6 @@
                 video.srcObject = stream;
                 videoTrack = stream.getVideoTracks()[0];
                 
-                // Sprawdź możliwości sprzętowe (API często ograniczone na mobilkach)
                 if (typeof videoTrack.getCapabilities === 'function') {
                     capabilities = videoTrack.getCapabilities();
                     setupCameraSliders();
@@ -291,6 +307,9 @@
                     accumulator = new Float32Array(canvasWidth * canvasHeight * 4);
                     
                     statStatus.innerText = "GOTOWY (PODGLĄD)";
+                    
+                    // Wymuś test sprzętowych ustawięń na start by sprawdzić, czy działają na tym smartfonie
+                    applyCameraSettings();
                     requestAnimationFrame(processLoop);
                 };
             } catch (err) {
@@ -306,12 +325,10 @@
             const sIso = document.getElementById('sliderIso');
             const sExp = document.getElementById('sliderExp');
             
-            // Konfiguracja sliderów na podstawie odczytów sprzętu
             if (capabilities.iso) {
                 sIso.min = capabilities.iso.min; sIso.max = capabilities.iso.max; sIso.step = capabilities.iso.step || 100;
             }
             if (capabilities.exposureTime) {
-                // exposureTime jest zwykle w ułamkach sekundy lub ms zależnie od implementacji. Zakładamy ms.
                 sExp.min = 1; sExp.max = 1000; 
             }
         }
@@ -327,15 +344,17 @@
             document.getElementById('valGain').innerText = softwareGain.toFixed(1) + "x";
 
             try {
-                // Próba aplikacji hardware constraints
                 await videoTrack.applyConstraints({
                     advanced: [{
                         iso: currentIso,
                         exposureTime: currentExp
                     }]
                 });
+                hwConstraintsSupported = true;
+                hwWarning.style.display = 'none';
             } catch (e) {
-                console.warn("Przeglądarka odrzuciła sprzętowe parametry (normalne dla iOS/Mobile). Używany zysk programowy.");
+                hwConstraintsSupported = false;
+                hwWarning.style.display = 'block';
             }
         }
 
@@ -346,7 +365,6 @@
         document.getElementById('btnHwFocus').addEventListener('click', async () => {
             if (!videoTrack) return;
             try {
-                // Wymuszenie autofocusa
                 await videoTrack.applyConstraints({ advanced: [{ focusMode: "single-shot" }] });
                 setTimeout(() => {
                     videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] }).catch(()=>{});
@@ -355,7 +373,6 @@
         });
 
         document.getElementById('btnAutoParams').addEventListener('click', () => {
-            // Prosta automatyzacja: Zwiększ ISO/Gain jeśli obraz jest za ciemny
             offscreenCtx.drawImage(video, 0, 0, canvasWidth, canvasHeight);
             const data = offscreenCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
             let sum = 0;
@@ -371,15 +388,14 @@
             }
             document.getElementById('sliderGain').value = softwareGain;
             applyCameraSettings();
-            alert(`Sugerowany Gain: ${softwareGain.toFixed(1)}x (Średnia jasność: ${Math.round(mean)})`);
         });
 
         // --- AUTOMATYCZNA EKSPOZYCJA DLA FLAT ---
         async function autoExposeForFlat() {
-            if (!capabilities || !capabilities.exposureTime) return;
+            if (!hwConstraintsSupported || !capabilities || !capabilities.exposureTime) return;
             
             let exp = currentExp;
-            let targetMean = 128; // 50% histogramu
+            let targetMean = 128;
             let tolerance = 15;
             let maxIter = 10;
 
@@ -391,7 +407,6 @@
                     sum += data[j]*0.299 + data[j+1]*0.587 + data[j+2]*0.114;
                 }
                 let mean = sum / (canvasWidth * canvasHeight);
-                
                 if (Math.abs(mean - targetMean) < tolerance) break;
                 
                 let ratio = targetMean / Math.max(mean, 1);
@@ -399,25 +414,17 @@
                 exp = Math.max(capabilities.exposureTime.min || 1, Math.min(capabilities.exposureTime.max || 1000, exp));
                 
                 try {
-                    await videoTrack.applyConstraints({
-                        advanced: [{ exposureTime: exp, iso: currentIso }]
-                    });
-                    await new Promise(r => setTimeout(r, 400)); // Czekaj na adaptację sprzętową
-                } catch(e) {
-                    break;
-                }
+                    await videoTrack.applyConstraints({ advanced: [{ exposureTime: exp, iso: currentIso }] });
+                    await new Promise(r => setTimeout(r, 400));
+                } catch(e) { break; }
             }
         }
 
         // --- KALIBRACJA (DARK, BIAS, FLAT) ---
-        // Zbiera N klatek, uśrednia i zapisuje
         async function captureCalibrationFrame(type) {
             if (!videoTrack) return;
 
-            // Zablokuj ostrość na obiekcie przed rozpoczęciem nagrywania klatek kalibracyjnych
-            try {
-                await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] });
-            } catch(e) { console.warn("Nie można zablokować ostrości."); }
+            try { await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] }); } catch(e) {}
 
             let numFrames = 10;
             let originalExp = currentExp;
@@ -428,11 +435,9 @@
             } else if (type === 'bias') {
                 numFrames = 16;
                 statStatus.innerText = `USTAWIANIE MIN CZASU...`;
-                if (capabilities && capabilities.exposureTime) {
+                if (hwConstraintsSupported && capabilities && capabilities.exposureTime) {
                     try {
-                        await videoTrack.applyConstraints({
-                            advanced: [{ exposureTime: capabilities.exposureTime.min || 1, iso: currentIso }]
-                        });
+                        await videoTrack.applyConstraints({ advanced: [{ exposureTime: capabilities.exposureTime.min || 1, iso: currentIso }] });
                         await new Promise(r => setTimeout(r, 500));
                     } catch(e) {}
                 }
@@ -446,47 +451,40 @@
 
             let calibAcc = new Float32Array(canvasWidth * canvasHeight * 4);
             
+            // Programowa symulacja na czas kalibracji
+            let activeDigitalGain = hwConstraintsSupported ? 1.0 : (currentIso / 800) * (currentExp / 30);
+
             for(let f=0; f<numFrames; f++) {
-                // Czekamy chwilę między klatkami
                 await new Promise(r => setTimeout(r, 100)); 
                 offscreenCtx.drawImage(video, 0, 0, canvasWidth, canvasHeight);
                 const data = offscreenCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
                 for(let i=0; i<data.length; i++) {
-                    calibAcc[i] += data[i];
+                    // Mnożymy kalibrację, by odpowiadała widocznemu obrazowi (jeśli używany jest cyfrowy zysk)
+                    calibAcc[i] += data[i] * activeDigitalGain;
                 }
                 statStatus.innerText = `${type.toUpperCase()} (${f+1}/${numFrames})`;
             }
             
-            // Uśrednianie
             const finalData = new Uint8ClampedArray(calibAcc.length);
             let flatSum = 0;
             for(let i=0; i<finalData.length; i+=4) {
-                finalData[i]   = calibAcc[i] / numFrames;
-                finalData[i+1] = calibAcc[i+1] / numFrames;
-                finalData[i+2] = calibAcc[i+2] / numFrames;
+                finalData[i]   = Math.min(255, calibAcc[i] / numFrames);
+                finalData[i+1] = Math.min(255, calibAcc[i+1] / numFrames);
+                finalData[i+2] = Math.min(255, calibAcc[i+2] / numFrames);
                 finalData[i+3] = 255;
                 if(type === 'flat') flatSum += (finalData[i] + finalData[i+1] + finalData[i+2]) / 3;
             }
 
-            calibData[type] = calibAcc.map(v => v / numFrames); // Zapisz do pamięci Float
-            
-            if(type === 'flat') {
-                calibData.flatMean = flatSum / (canvasWidth * canvasHeight);
-            }
+            calibData[type] = calibAcc.map(v => v / numFrames);
+            if(type === 'flat') calibData.flatMean = flatSum / (canvasWidth * canvasHeight);
 
-            // Przywróć oryginalny czas naświetlania jeśli został zmieniony (po nagraniu Bias/Flat)
-            if (type === 'bias' || type === 'flat') {
-                try {
-                    await videoTrack.applyConstraints({
-                        advanced: [{ exposureTime: originalExp, iso: currentIso }]
-                    });
-                } catch(e) {}
+            if (hwConstraintsSupported && (type === 'bias' || type === 'flat')) {
+                try { await videoTrack.applyConstraints({ advanced: [{ exposureTime: originalExp, iso: currentIso }] }); } catch(e) {}
             }
 
             document.getElementById(`status${type.charAt(0).toUpperCase() + type.slice(1)}`).innerText = "Załadowano w pamięci";
             statStatus.innerText = "GOTOWY";
 
-            // Zapis do PNG
             const tempCanvas = document.createElement('canvas');
             tempCanvas.width = canvasWidth; tempCanvas.height = canvasHeight;
             const tCtx = tempCanvas.getContext('2d');
@@ -510,15 +508,12 @@
                     const tCtx = tCanvas.getContext('2d');
                     tCtx.drawImage(img, 0, 0, canvasWidth, canvasHeight);
                     const data = tCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
-                    
                     calibData[type] = new Float32Array(data);
-                    
                     if(type === 'flat') {
                         let flatSum = 0;
                         for(let i=0; i<data.length; i+=4) flatSum += (data[i]+data[i+1]+data[i+2])/3;
                         calibData.flatMean = flatSum / (canvasWidth * canvasHeight);
                     }
-                    
                     document.getElementById(`status${type.charAt(0).toUpperCase() + type.slice(1)}`).innerText = "Wczytano plik";
                 }
                 img.src = e.target.result;
@@ -547,12 +542,11 @@
 
         // --- MATEMATYKA OBRAZU I STACKOWANIE ---
 
-        // Oblicza kontrast dla obszaru centralnego (pomoc w ostrzeniu / Focus Assist)
         function calculateFocusScore(lumaData) {
             let focus = 0;
             const cx = Math.floor(canvasWidth / 2);
             const cy = Math.floor(canvasHeight / 2);
-            const size = 100; // Środek 200x200
+            const size = 100;
             
             for (let y = cy - size; y < cy + size; y++) {
                 let rowOffset = y * canvasWidth;
@@ -569,20 +563,16 @@
         function calculateCentroid(lumaData, modeParams) {
             let sumX = 0, sumY = 0, count = 0;
             const threshold = modeParams.threshold;
-            
             for (let y = 0; y < canvasHeight; y += 2) {
                 let rowOffset = y * canvasWidth;
                 for (let x = 0; x < canvasWidth; x += 2) {
-                    if (lumaData[rowOffset + x] > threshold) {
-                        sumX += x; sumY += y; count++;
-                    }
+                    if (lumaData[rowOffset + x] > threshold) { sumX += x; sumY += y; count++; }
                 }
             }
             if (count < modeParams.minPixels) return null;
             return { x: Math.round(sumX / count), y: Math.round(sumY / count) };
         }
 
-        // --- PRECYZYJNE WYRÓWNYWANIE (TEMPLATE MATCHING - SAD) ---
         function getPatch(lumaData, cx, cy, size) {
             let patch = new Uint8Array(size * size);
             let half = Math.floor(size / 2);
@@ -590,11 +580,8 @@
             for (let y = cy - half; y < cy - half + size; y++) {
                 let rowOffset = y * canvasWidth;
                 for (let x = cx - half; x < cx - half + size; x++) {
-                    if (x >= 0 && x < canvasWidth && y >= 0 && y < canvasHeight) {
-                        patch[pIdx++] = lumaData[rowOffset + x];
-                    } else {
-                        patch[pIdx++] = 0;
-                    }
+                    if (x >= 0 && x < canvasWidth && y >= 0 && y < canvasHeight) patch[pIdx++] = lumaData[rowOffset + x];
+                    else patch[pIdx++] = 0;
                 }
             }
             return patch;
@@ -602,15 +589,11 @@
 
         function findBestMatch(lumaData, refPatch, cx, cy, size, searchRadius) {
             let half = Math.floor(size / 2);
-
-            // Krok 1: Zgrubne wyszukiwanie (co 2 piksele) dla wydajności
-            let bestCoarseX = 0, bestCoarseY = 0;
-            let coarseMinSAD = Infinity;
+            let bestCoarseX = 0, bestCoarseY = 0, coarseMinSAD = Infinity;
             
             for (let dy = -searchRadius; dy <= searchRadius; dy += 2) {
                 for (let dx = -searchRadius; dx <= searchRadius; dx += 2) {
-                    let sad = 0;
-                    let pIdx = 0;
+                    let sad = 0, pIdx = 0;
                     for (let py = 0; py < size; py++) {
                         let y = cy + dy - half + py;
                         let yValid = y >= 0 && y < canvasHeight;
@@ -622,21 +605,14 @@
                         }
                         if (sad >= coarseMinSAD) break;
                     }
-                    if (sad < coarseMinSAD) {
-                        coarseMinSAD = sad;
-                        bestCoarseX = dx;
-                        bestCoarseY = dy;
-                    }
+                    if (sad < coarseMinSAD) { coarseMinSAD = sad; bestCoarseX = dx; bestCoarseY = dy; }
                 }
             }
 
-            // Krok 2: Precyzyjne wyszukiwanie wokół najlepszego trafienia (co 1 piksel)
-            let bestSAD = Infinity;
-            let bestDx = 0, bestDy = 0;
+            let bestSAD = Infinity, bestDx = 0, bestDy = 0;
             for (let dy = bestCoarseY - 1; dy <= bestCoarseY + 1; dy++) {
                 for (let dx = bestCoarseX - 1; dx <= bestCoarseX + 1; dx++) {
-                    let sad = 0;
-                    let pIdx = 0;
+                    let sad = 0, pIdx = 0;
                     for (let py = 0; py < size; py++) {
                         let y = cy + dy - half + py;
                         let yValid = y >= 0 && y < canvasHeight;
@@ -648,11 +624,7 @@
                         }
                         if (sad >= bestSAD) break;
                     }
-                    if (sad < bestSAD) {
-                        bestSAD = sad;
-                        bestDx = dx;
-                        bestDy = dy;
-                    }
+                    if (sad < bestSAD) { bestSAD = sad; bestDx = dx; bestDy = dy; }
                 }
             }
             return { dx: bestDx, dy: bestDy, sad: bestSAD };
@@ -670,37 +642,40 @@
                 lumaFrame = new Uint8Array(canvasWidth * canvasHeight);
             }
 
+            // GŁÓWNA ZMIANA: TotalGain uwzględnia programową symulację, jeśli HW zawodzi.
+            let totalGain = softwareGain;
+            if (!hwConstraintsSupported) {
+                let simulatedIso = currentIso / 800;
+                let simulatedExp = currentExp / 30;
+                totalGain *= (simulatedIso * simulatedExp);
+            }
+
             let lumaIdx = 0;
-            // Zastosuj Software Gain & Kalibrację dla każdego piksela
             for (let i = 0; i < rawData.length; i += 4) {
-                for (let c = 0; c < 3; c++) { // R, G, B
+                for (let c = 0; c < 3; c++) { 
                     let val = rawData[i + c];
+                    // Podbijamy obraz sprzętowo LUB programowo na samym początku przed kalibracją
+                    val *= totalGain;
+
                     if (calibData.bias) val -= calibData.bias[i + c];
                     if (calibData.dark) val -= calibData.dark[i + c];
                     if (calibData.flat && calibData.flat[i+c] > 10) {
                         val = (val * calibData.flatMean) / calibData.flat[i + c];
                     }
-                    val *= softwareGain;
                     rawData[i + c] = Math.max(0, Math.min(255, val));
                 }
-                // Tworzymy mapę jasności (Luma) na potrzeby super-dokładnego śledzenia
                 lumaFrame[lumaIdx++] = rawData[i]*0.299 + rawData[i+1]*0.587 + rawData[i+2]*0.114;
             }
 
-            // Aktualizuj Asystenta Ostrości (tylko w podglądzie/pauzie)
             if (!isStacking || isPaused) {
-                if(frameCount % 5 === 0) { // Co 5 klatkę by oszczędzić CPU
-                    statFocus.innerText = calculateFocusScore(lumaFrame);
-                }
+                if(frameCount % 5 === 0) statFocus.innerText = calculateFocusScore(lumaFrame);
                 ctx.putImageData(currentFrameData, 0, 0);
                 requestAnimationFrame(processLoop);
                 return;
             }
 
-            // --- STACKOWANIE ---
             const modeKey = modeSelect.value;
             
-            // 1. Zdefiniowanie punktu "Zero" przy pierwszej klatce
             if (frameCount === 0) {
                 referenceCentroid = calculateCentroid(lumaFrame, MODES[modeKey]);
                 if (!referenceCentroid) {
@@ -711,7 +686,6 @@
                 }
             }
 
-            // 2. Inicjalizacja Łatki Śledzącej (Patch) - na starcie lub po powrocie z pauzy
             if (!trackPatch) {
                 let currentPos = calculateCentroid(lumaFrame, MODES[modeKey]);
                 if (!currentPos) {
@@ -725,20 +699,12 @@
                 lastTrackY = currentPos.y;
                 statStatus.innerText = "ZŁAPANO OBIEKT!";
             } else {
-                // 3. Właściwe śledzenie klatki za pomocą Template Matching (SAD)
                 let match = findBestMatch(lumaFrame, trackPatch, lastTrackX, lastTrackY, PATCH_SIZE, SEARCH_RADIUS);
-                
-                lastTrackX += match.dx;
-                lastTrackY += match.dy;
-                
-                // Zabezpieczenie przed ucieczką poza ramy ekranu
+                lastTrackX += match.dx; lastTrackY += match.dy;
                 lastTrackX = Math.max(PATCH_SIZE/2, Math.min(canvasWidth - PATCH_SIZE/2, lastTrackX));
                 lastTrackY = Math.max(PATCH_SIZE/2, Math.min(canvasHeight - PATCH_SIZE/2, lastTrackY));
                 
-                // Odświeżenie łatki wzorcowej co 60 klatek (kompensacja np. rotacji pola)
-                if (frameCount % 60 === 0) {
-                    trackPatch = getPatch(lumaFrame, lastTrackX, lastTrackY, PATCH_SIZE);
-                }
+                if (frameCount % 60 === 0) trackPatch = getPatch(lumaFrame, lastTrackX, lastTrackY, PATCH_SIZE);
             }
 
             const dx = Math.round(lastTrackX - referenceCentroid.x);
@@ -747,12 +713,9 @@
             document.getElementById('stat-offset').innerText = `dx:${dx} dy:${dy}`;
             statStatus.innerText = "STACKOWANIE...";
 
-            // Wyrównywanie
             for (let y = 0; y < canvasHeight; y++) {
                 for (let x = 0; x < canvasWidth; x++) {
-                    const srcX = x + dx;
-                    const srcY = y + dy;
-
+                    const srcX = x + dx; const srcY = y + dy;
                     if (srcX >= 0 && srcX < canvasWidth && srcY >= 0 && srcY < canvasHeight) {
                         const srcI = (srcY * canvasWidth + srcX) * 4;
                         const dstI = (y * canvasWidth + x) * 4;
@@ -774,7 +737,6 @@
             if (frameCount === 0) return;
             const renderData = ctx.createImageData(canvasWidth, canvasHeight);
             const dest = renderData.data;
-
             for (let i = 0; i < accumulator.length; i += 4) {
                 dest[i]     = Math.min(255, accumulator[i] / frameCount);
                 dest[i + 1] = Math.min(255, accumulator[i + 1] / frameCount);
@@ -799,8 +761,6 @@
                     statStatus.innerText = "PAUZA (PODGLĄD)";
                 } else {
                     isPaused = false;
-                    // Resetowanie łatki sprawi, że program ponownie znajdzie obiekt globalnie,
-                    // ale referenceCentroid pozostanie to samo, co pozwoli kontynuować stary stack bez podwajania obrazu.
                     trackPatch = null; 
                     btnToggle.innerText = "PAUZA / KOREKTA";
                     btnToggle.classList.add('active');
