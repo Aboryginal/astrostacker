@@ -396,7 +396,17 @@
             isFocusLocked = !isFocusLocked;
             try {
                 if (isFocusLocked) {
-                    await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] });
+                    // Pobierz dokładną aktualną odległość ogniskowania
+                    const settings = videoTrack.getSettings();
+                    let lockConstraints = { focusMode: "manual" };
+                    
+                    // Jeżeli system na to pozwala, narzuć mu utrzymanie obecnej dokładnej fizycznej pozycji
+                    if (settings.focusDistance !== undefined) {
+                        lockConstraints.focusDistance = settings.focusDistance;
+                    }
+                    
+                    await videoTrack.applyConstraints({ advanced: [lockConstraints] });
+                    
                     btnLockFocus.innerText = "ODBLOKUJ FOCUS";
                     btnLockFocus.classList.add('active');
                 } else {
@@ -405,7 +415,7 @@
                     btnLockFocus.classList.remove('active');
                 }
             } catch (e) {
-                alert("Twój telefon nie wspiera manualnej kontroli focusu.");
+                alert("Twój telefon nie wspiera manualnego blokowania ostrości.");
                 isFocusLocked = false;
                 btnLockFocus.innerText = "ZABLOKUJ FOCUS";
                 btnLockFocus.classList.remove('active');
@@ -416,9 +426,20 @@
             if (!videoTrack) return;
             try {
                 await videoTrack.applyConstraints({ advanced: [{ focusMode: "single-shot" }] });
-                setTimeout(() => {
-                    const targetMode = isFocusLocked ? "manual" : "continuous";
-                    videoTrack.applyConstraints({ advanced: [{ focusMode: targetMode }] }).catch(()=>{});
+                setTimeout(async () => {
+                    try {
+                        if (isFocusLocked) {
+                            // Jeżeli był zablokowany, aktualizujemy blokadę do nowej uzyskanej pozycji po single-shot
+                            const settings = videoTrack.getSettings();
+                            let lockConstraints = { focusMode: "manual" };
+                            if (settings.focusDistance !== undefined) {
+                                lockConstraints.focusDistance = settings.focusDistance;
+                            }
+                            await videoTrack.applyConstraints({ advanced: [lockConstraints] });
+                        } else {
+                            await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+                        }
+                    } catch(err) {}
                 }, 2000);
             } catch (e) { alert("Autofocus sprzętowy nieobsługiwany."); }
         });
@@ -475,10 +496,15 @@
         async function captureCalibrationFrame(type) {
             if (!videoTrack) return;
 
-            // Zabezpieczenie ostrości na czas kalibracji - nie zmieniamy, jeśli jest zablokowana przez użytkownika
+            // Zabezpieczenie ostrości na czas kalibracji - pobieramy jej obecny stan fizyczny i trzymamy go sztywno
             let wasFocusLockedBeforeCalib = isFocusLocked;
             if (!isFocusLocked) {
-                try { await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] }); } catch(e) {}
+                try { 
+                    const settings = videoTrack.getSettings();
+                    let lockConstraints = { focusMode: "manual" };
+                    if (settings.focusDistance !== undefined) lockConstraints.focusDistance = settings.focusDistance;
+                    await videoTrack.applyConstraints({ advanced: [lockConstraints] }); 
+                } catch(e) {}
             }
 
             let numFrames = 10;
