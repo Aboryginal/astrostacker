@@ -114,7 +114,7 @@
         <div class="flex justify-between gap-2 mt-1">
             <button id="btnToggle" class="btn-astro flex-1 text-xs">START STACK</button>
             <button id="btnReset" class="btn-astro flex-1 text-xs">RESET</button>
-            <button id="btnSave" class="btn-astro flex-1 text-xs">ZAPISZ TIFF</button>
+            <button id="btnSave" class="btn-astro flex-1 text-xs">ZAPISZ OBRAZ</button>
         </div>
     </div>
 
@@ -130,6 +130,30 @@
                 Uwaga: Telefon odrzucił sprzętowe parametry. Aplikacja używa teraz bezstratnej symulacji programowej dla ISO i Migawki (Digital Gain). Przeglądarka może trwale blokować ten dostęp.
             </p>
 
+            <!-- Format Zapisu -->
+            <div class="border border-red-900 p-2 rounded">
+                <label class="flex justify-between text-xs mb-1">
+                    <span class="font-bold">Zapis i Obraz</span>
+                </label>
+                <div class="flex flex-col gap-2 mt-2">
+                    <select id="selectSaveFormat" class="btn-astro w-full text-xs">
+                        <option value="tiff">Zapis: Tylko TIFF (Bezstratny)</option>
+                        <option value="png">Zapis: Tylko PNG (Web)</option>
+                        <option value="both">Zapis: TIFF + PNG</option>
+                    </select>
+
+                    <select id="selectCrop" class="btn-astro w-full text-xs">
+                        <option value="1.0">Pole Widzenia: 100% (Cała matryca)</option>
+                        <option value="0.75">Pole Widzenia: 75% (Lekki crop)</option>
+                        <option value="0.5">Pole Widzenia: 50% (Powiększenie 2x)</option>
+                        <option value="0.35">Pole Widzenia: 35% (Powiększenie ~3x)</option>
+                        <option value="0.25">Pole Widzenia: 25% (Powiększenie 4x)</option>
+                    </select>
+                    <span class="text-[10px] text-red-500">* Zmiana pola widzenia kasuje obecny stack i pliki kalibracyjne.</span>
+                </div>
+            </div>
+
+            <!-- Parametry Ekspozycji -->
             <div>
                 <label class="flex justify-between text-xs mb-1">
                     <span>Czułość (ISO / Zysk)</span>
@@ -226,14 +250,18 @@
         
         let videoTrack = null;
         let capabilities = null;
-        let hwConstraintsSupported = false; // Detekcja wsparcia dla API
-        let isFocusLocked = false; // Stan blokady focusu
+        let hwConstraintsSupported = false;
+        let isFocusLocked = false;
         
         let isStacking = false;
         let isPaused = false;
         let frameCount = 0;
         let accumulator = null; 
         let referenceCentroid = null;
+        
+        // Zmienne natywne matrycy i skalowane pola widzenia (Crop)
+        let nativeWidth = 0;
+        let nativeHeight = 0;
         let canvasWidth = 0;
         let canvasHeight = 0;
         
@@ -253,7 +281,7 @@
         let currentExp = 30;
         let softwareGain = 1.0;
 
-        // Dane Kalibracyjne (Float32Array dla precyzji)
+        // Dane Kalibracyjne
         let calibData = {
             dark: null,
             bias: null,
@@ -261,20 +289,20 @@
             flatMean: 1.0
         };
 
-        // Tryby wyrównywania
         const MODES = {
             planet: { threshold: 200, minPixels: 50 },
             moon:   { threshold: 120, minPixels: 500 },
             dso:    { threshold: 240, minPixels: 5 }
         };
 
-        // UI Elements
         const btnToggle = document.getElementById('btnToggle');
         const statStatus = document.getElementById('stat-status');
         const statFocus = document.getElementById('stat-focus');
         const modeSelect = document.getElementById('modeSelect');
         const hwWarning = document.getElementById('hw-warning');
         const btnLockFocus = document.getElementById('btnLockFocus');
+        const selectCrop = document.getElementById('selectCrop');
+        const selectSaveFormat = document.getElementById('selectSaveFormat');
 
         // --- INICJALIZACJA KAMERY ---
         async function initCamera() {
@@ -301,7 +329,6 @@
                     stream = await navigator.mediaDevices.getUserMedia({
                         video: {
                             deviceId: { exact: mainCamera.deviceId },
-                            // ZMIANA: Żądamy matrycy ok 12 MP zamiast 720p
                             width: { ideal: 4000 },
                             height: { ideal: 3000 },
                             advanced: [
@@ -322,15 +349,12 @@
                 }
                 
                 video.onloadedmetadata = () => {
-                    canvasWidth = video.videoWidth;
-                    canvasHeight = video.videoHeight;
-                    displayCanvas.width = canvasWidth;
-                    displayCanvas.height = canvasHeight;
-                    offscreenCanvas.width = canvasWidth;
-                    offscreenCanvas.height = canvasHeight;
-                    accumulator = new Float32Array(canvasWidth * canvasHeight * 4);
+                    // Pobranie Prawdziwej, natywnej rozdzielczości
+                    nativeWidth = video.videoWidth;
+                    nativeHeight = video.videoHeight;
                     
-                    statStatus.innerText = `GOTOWY (${canvasWidth}x${canvasHeight})`;
+                    // Aplikacja mnożnika (cropa)
+                    applyCropScale();
                     
                     applyCameraSettings();
                     requestAnimationFrame(processLoop);
@@ -340,6 +364,50 @@
                 statStatus.innerText = "BŁĄD KAMERY";
                 alert("Nie można uzyskać dostępu do kamery. " + err.message);
             }
+        }
+
+        // --- OBSŁUGA CROP / ZOOM ---
+        function applyCropScale() {
+            const scale = parseFloat(selectCrop.value);
+            canvasWidth = Math.floor(nativeWidth * scale);
+            canvasHeight = Math.floor(nativeHeight * scale);
+            
+            displayCanvas.width = canvasWidth;
+            displayCanvas.height = canvasHeight;
+            offscreenCanvas.width = canvasWidth;
+            offscreenCanvas.height = canvasHeight;
+            
+            accumulator = new Float32Array(canvasWidth * canvasHeight * 4);
+            lumaFrame = new Uint8Array(canvasWidth * canvasHeight);
+            
+            // Reset Stacku
+            isStacking = false;
+            isPaused = false;
+            frameCount = 0;
+            referenceCentroid = null;
+            trackPatch = null;
+            document.getElementById('stat-frames').innerText = "0";
+            document.getElementById('stat-offset').innerText = "dx:0 dy:0";
+            btnToggle.innerText = "START STACK";
+            btnToggle.classList.remove('active');
+            
+            // Czyszczenie Kalibracji
+            calibData = { dark: null, bias: null, flat: null, flatMean: 1.0 };
+            document.querySelectorAll('[id^="status"]').forEach(el => {
+                if(el.id !== 'stat-status' && el.id !== 'stat-frames' && el.id !== 'stat-offset' && el.id !== 'stat-focus') el.innerText = "Brak";
+            });
+
+            statStatus.innerText = `GOTOWY (${canvasWidth}x${canvasHeight})`;
+        }
+        
+        selectCrop.addEventListener('change', applyCropScale);
+
+        // Pobiera środek obrazu z uwzględnieniem cyfrowego zoomu
+        function captureVideoToOffscreen() {
+            if (!nativeWidth || !canvasWidth) return;
+            const sx = (nativeWidth - canvasWidth) / 2;
+            const sy = (nativeHeight - canvasHeight) / 2;
+            offscreenCtx.drawImage(video, sx, sy, canvasWidth, canvasHeight, 0, 0, canvasWidth, canvasHeight);
         }
 
         // --- USTAWIENIA KAMERY (SPRZĘTOWE + SOFTWARE) ---
@@ -386,14 +454,11 @@
         document.getElementById('sliderExp').addEventListener('input', applyCameraSettings);
         document.getElementById('sliderGain').addEventListener('input', applyCameraSettings);
 
-        // Zablokuj / Odblokuj Focus z inteligentnym Fallbackiem
         btnLockFocus.addEventListener('click', async () => {
             if (!videoTrack) return;
             try {
                 if (!isFocusLocked) {
                     const settings = videoTrack.getSettings();
-                    
-                    // Krok 1: Próba zablokowania ostrości dokładnie na obecnym dystansie fizycznym
                     try {
                         if (settings.focusDistance !== undefined) {
                             await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual", focusDistance: settings.focusDistance }] });
@@ -401,10 +466,8 @@
                             throw new Error("Brak wsparcia dla odczytu focusDistance");
                         }
                     } catch (e) {
-                        // Krok 2 (Fallback): Sama blokada trybu na manualny (zwykle utrzymuje aktualną pozycję silniczka w Pixelach/Samsungach)
                         await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] });
                     }
-                    
                     isFocusLocked = true;
                     btnLockFocus.innerText = "ODBLOKUJ FOCUS";
                     btnLockFocus.classList.add('active');
@@ -446,10 +509,9 @@
         });
 
         document.getElementById('btnAutoParams').addEventListener('click', () => {
-            offscreenCtx.drawImage(video, 0, 0, canvasWidth, canvasHeight);
+            captureVideoToOffscreen();
             const data = offscreenCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
             let sum = 0;
-            // Co czwarty piksel dla wydajności
             for(let i=0; i<data.length; i+=16) {
                 sum += (data[i] + data[i+1] + data[i+2]) / 3;
             }
@@ -474,7 +536,7 @@
             let maxIter = 10;
 
             for (let i = 0; i < maxIter; i++) {
-                offscreenCtx.drawImage(video, 0, 0, canvasWidth, canvasHeight);
+                captureVideoToOffscreen();
                 const data = offscreenCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
                 let sum = 0;
                 for(let j=0; j<data.length; j+=16) {
@@ -531,7 +593,7 @@
 
             for(let f=0; f<numFrames; f++) {
                 await new Promise(r => setTimeout(r, 100)); 
-                offscreenCtx.drawImage(video, 0, 0, canvasWidth, canvasHeight);
+                captureVideoToOffscreen();
                 const data = offscreenCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
                 for(let i=0; i<data.length; i++) {
                     calibAcc[i] += data[i] * activeDigitalGain;
@@ -568,7 +630,6 @@
             const tCtx = tempCanvas.getContext('2d');
             tCtx.putImageData(new ImageData(finalData, canvasWidth, canvasHeight), 0, 0);
             
-            // Pliki kalibracyjne ZAWSZE PNG dla kompatybilności przeglądarki z plikami File
             const link = document.createElement('a');
             link.download = `${type}_ISO${currentIso}_${originalExp}ms.png`;
             link.href = tempCanvas.toDataURL('image/png');
@@ -670,7 +731,6 @@
             let half = Math.floor(size / 2);
             let bestCoarseX = 0, bestCoarseY = 0, coarseMinSAD = Infinity;
             
-            // Subsampling poszukiwań przy 12 MP
             let step = canvasWidth > 2000 ? 4 : 2;
 
             for (let dy = -searchRadius; dy <= searchRadius; dy += step) {
@@ -716,7 +776,7 @@
         function processLoop() {
             if (!canvasWidth) return requestAnimationFrame(processLoop);
 
-            offscreenCtx.drawImage(video, 0, 0, canvasWidth, canvasHeight);
+            captureVideoToOffscreen();
             let currentFrameData = offscreenCtx.getImageData(0, 0, canvasWidth, canvasHeight);
             let rawData = currentFrameData.data;
 
@@ -886,7 +946,7 @@
             view.setUint16(offsetBPS + 2, 8, true);
             view.setUint16(offsetBPS + 4, 8, true);
 
-            // Kopiowanie pikseli pomijając kanał Alpha (waga/szybkość)
+            // Kopiowanie pikseli pomijając kanał Alpha
             let p = offsetPixels;
             for (let i = 0; i < data.length; i += 4) {
                 u8[p++] = data[i];     // R
@@ -927,25 +987,38 @@
             document.getElementById('stat-offset').innerText = "dx:0 dy:0";
             btnToggle.innerText = "START STACK";
             btnToggle.classList.remove('active');
-            statStatus.innerText = "GOTOWY";
+            statStatus.innerText = `GOTOWY (${canvasWidth}x${canvasHeight})`;
         });
 
         document.getElementById('btnSave').addEventListener('click', () => {
             if (frameCount === 0) return alert("Brak klatek do zapisania!");
             if (isStacking) renderAccumulator();
             
-            // Zapis bezstratnego TIFFa wygenerowanego w kodzie
-            statStatus.innerText = "GENEROWANIE TIFF...";
+            const format = selectSaveFormat.value;
+            statStatus.innerText = "GENEROWANIE ZAPISU...";
+            
             setTimeout(() => {
-                const tiffBlob = createTiffBlob(displayCanvas);
-                const dataUrl = URL.createObjectURL(tiffBlob);
-                
-                const link = document.createElement('a');
-                link.download = `astro_stack_${modeSelect.value}_${frameCount}klatek.tiff`;
-                link.href = dataUrl; 
-                link.click();
-                
-                URL.revokeObjectURL(dataUrl); // Czyszczenie pamięci po zapisie
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const baseName = `astro_stack_${modeSelect.value}_${frameCount}kl`;
+
+                if (format === 'png' || format === 'both') {
+                    const dataUrl = displayCanvas.toDataURL('image/png');
+                    const link = document.createElement('a');
+                    link.download = `${baseName}.png`;
+                    link.href = dataUrl;
+                    link.click();
+                }
+
+                if (format === 'tiff' || format === 'both') {
+                    const tiffBlob = createTiffBlob(displayCanvas);
+                    const dataUrl = URL.createObjectURL(tiffBlob);
+                    const link = document.createElement('a');
+                    link.download = `${baseName}.tiff`;
+                    link.href = dataUrl; 
+                    link.click();
+                    setTimeout(() => URL.revokeObjectURL(dataUrl), 1000); // Czyszczenie pamięci po zwłoce
+                }
+
                 statStatus.innerText = "ZAPISANO";
             }, 100);
         });
