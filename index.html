@@ -127,7 +127,7 @@
         
         <div class="flex flex-col gap-5 overflow-y-auto pb-8">
             <p id="hw-warning" class="text-xs text-yellow-500 font-bold hidden bg-yellow-900 bg-opacity-30 p-2 rounded">
-                Uwaga: Telefon odrzucił sprzętowe parametry. Aplikacja używa teraz bezstratnej symulacji programowej dla ISO i Migawki (Digital Gain).
+                Uwaga: Telefon odrzucił sprzętowe parametry. Aplikacja używa teraz bezstratnej symulacji programowej dla ISO i Migawki (Digital Gain). Przeglądarka może trwale blokować ten dostęp.
             </p>
 
             <div>
@@ -344,8 +344,11 @@
             document.getElementById('valGain').innerText = softwareGain.toFixed(1) + "x";
 
             try {
+                // DODANO: exposureMode: "manual" - flaga wymagana przez standard W3C,
+                // by przeglądarka w ogóle pozwoliła zmienić exposureTime.
                 await videoTrack.applyConstraints({
                     advanced: [{
+                        exposureMode: "manual",
                         iso: currentIso,
                         exposureTime: currentExp
                     }]
@@ -414,7 +417,7 @@
                 exp = Math.max(capabilities.exposureTime.min || 1, Math.min(capabilities.exposureTime.max || 1000, exp));
                 
                 try {
-                    await videoTrack.applyConstraints({ advanced: [{ exposureTime: exp, iso: currentIso }] });
+                    await videoTrack.applyConstraints({ advanced: [{ exposureMode: "manual", exposureTime: exp, iso: currentIso }] });
                     await new Promise(r => setTimeout(r, 400));
                 } catch(e) { break; }
             }
@@ -437,7 +440,7 @@
                 statStatus.innerText = `USTAWIANIE MIN CZASU...`;
                 if (hwConstraintsSupported && capabilities && capabilities.exposureTime) {
                     try {
-                        await videoTrack.applyConstraints({ advanced: [{ exposureTime: capabilities.exposureTime.min || 1, iso: currentIso }] });
+                        await videoTrack.applyConstraints({ advanced: [{ exposureMode: "manual", exposureTime: capabilities.exposureTime.min || 1, iso: currentIso }] });
                         await new Promise(r => setTimeout(r, 500));
                     } catch(e) {}
                 }
@@ -479,7 +482,7 @@
             if(type === 'flat') calibData.flatMean = flatSum / (canvasWidth * canvasHeight);
 
             if (hwConstraintsSupported && (type === 'bias' || type === 'flat')) {
-                try { await videoTrack.applyConstraints({ advanced: [{ exposureTime: originalExp, iso: currentIso }] }); } catch(e) {}
+                try { await videoTrack.applyConstraints({ advanced: [{ exposureMode: "manual", exposureTime: originalExp, iso: currentIso }] }); } catch(e) {}
             }
 
             document.getElementById(`status${type.charAt(0).toUpperCase() + type.slice(1)}`).innerText = "Załadowano w pamięci";
