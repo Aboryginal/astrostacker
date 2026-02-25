@@ -158,6 +158,7 @@
             <div class="grid grid-cols-2 gap-2 mt-4">
                 <button id="btnAutoParams" class="btn-astro text-xs">AUTO PARAMETRY</button>
                 <button id="btnHwFocus" class="btn-astro text-xs">HW AUTOFOCUS</button>
+                <button id="btnLockFocus" class="btn-astro text-xs col-span-2">ZABLOKUJ FOCUS</button>
             </div>
         </div>
     </div>
@@ -226,6 +227,7 @@
         let videoTrack = null;
         let capabilities = null;
         let hwConstraintsSupported = false; // Detekcja wsparcia dla API
+        let isFocusLocked = false; // Stan blokady focusu
         
         let isStacking = false;
         let isPaused = false;
@@ -272,23 +274,48 @@
         const statFocus = document.getElementById('stat-focus');
         const modeSelect = document.getElementById('modeSelect');
         const hwWarning = document.getElementById('hw-warning');
+        const btnLockFocus = document.getElementById('btnLockFocus');
 
         // --- INICJALIZACJA KAMERY ---
         async function initCamera() {
             try {
                 statStatus.innerText = "ŁĄCZENIE Z KAMERĄ...";
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { 
-                        facingMode: "environment",
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 },
-                        advanced: [
-                            { focusMode: "continuous" },
-                            { whiteBalanceMode: "manual", colorTemperature: 5000 }
-                        ]
-                    },
+                
+                // Krok 1: Podstawowe zapytanie by wymusić zgodę użytkownika i zainicjować dostęp
+                let stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment" },
                     audio: false
                 });
+
+                // Krok 2: Pobranie fizycznych obiektywów
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoInputs = devices.filter(d => d.kind === 'videoinput');
+                
+                // Szukamy głównego obiektywu (odrzucamy szeroki kąt i macro, aby wymusić sztywno główny obiektyw)
+                let mainCamera = videoInputs.find(d => 
+                    d.label.toLowerCase().includes('back') && 
+                    !d.label.toLowerCase().includes('ultra') && 
+                    !d.label.toLowerCase().includes('macro') &&
+                    !d.label.toLowerCase().includes('tele')
+                ) || videoInputs.find(d => d.label.toLowerCase().includes('back'));
+
+                // Krok 3: Jeśli znaleziono konkretny obiektyw, restartujemy zablokowany na nim strumień
+                if (mainCamera) {
+                    stream.getTracks().forEach(t => t.stop());
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            deviceId: { exact: mainCamera.deviceId },
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 },
+                            advanced: [
+                                { focusMode: "continuous" },
+                                { whiteBalanceMode: "manual", colorTemperature: 5000 }
+                            ]
+                        },
+                        audio: false
+                    });
+                }
+                
                 video.srcObject = stream;
                 videoTrack = stream.getVideoTracks()[0];
                 
@@ -308,7 +335,7 @@
                     
                     statStatus.innerText = "GOTOWY (PODGLĄD)";
                     
-                    // Wymuś test sprzętowych ustawięń na start by sprawdzić, czy działają na tym smartfonie
+                    // Wymuś test sprzętowych ustawięń na start
                     applyCameraSettings();
                     requestAnimationFrame(processLoop);
                 };
@@ -344,8 +371,6 @@
             document.getElementById('valGain').innerText = softwareGain.toFixed(1) + "x";
 
             try {
-                // DODANO: exposureMode: "manual" - flaga wymagana przez standard W3C,
-                // by przeglądarka w ogóle pozwoliła zmienić exposureTime.
                 await videoTrack.applyConstraints({
                     advanced: [{
                         exposureMode: "manual",
@@ -365,12 +390,35 @@
         document.getElementById('sliderExp').addEventListener('input', applyCameraSettings);
         document.getElementById('sliderGain').addEventListener('input', applyCameraSettings);
 
+        // Zablokuj / Odblokuj Focus
+        btnLockFocus.addEventListener('click', async () => {
+            if (!videoTrack) return;
+            isFocusLocked = !isFocusLocked;
+            try {
+                if (isFocusLocked) {
+                    await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] });
+                    btnLockFocus.innerText = "ODBLOKUJ FOCUS";
+                    btnLockFocus.classList.add('active');
+                } else {
+                    await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+                    btnLockFocus.innerText = "ZABLOKUJ FOCUS";
+                    btnLockFocus.classList.remove('active');
+                }
+            } catch (e) {
+                alert("Twój telefon nie wspiera manualnej kontroli focusu.");
+                isFocusLocked = false;
+                btnLockFocus.innerText = "ZABLOKUJ FOCUS";
+                btnLockFocus.classList.remove('active');
+            }
+        });
+
         document.getElementById('btnHwFocus').addEventListener('click', async () => {
             if (!videoTrack) return;
             try {
                 await videoTrack.applyConstraints({ advanced: [{ focusMode: "single-shot" }] });
                 setTimeout(() => {
-                    videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] }).catch(()=>{});
+                    const targetMode = isFocusLocked ? "manual" : "continuous";
+                    videoTrack.applyConstraints({ advanced: [{ focusMode: targetMode }] }).catch(()=>{});
                 }, 2000);
             } catch (e) { alert("Autofocus sprzętowy nieobsługiwany."); }
         });
@@ -427,7 +475,11 @@
         async function captureCalibrationFrame(type) {
             if (!videoTrack) return;
 
-            try { await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] }); } catch(e) {}
+            // Zabezpieczenie ostrości na czas kalibracji - nie zmieniamy, jeśli jest zablokowana przez użytkownika
+            let wasFocusLockedBeforeCalib = isFocusLocked;
+            if (!isFocusLocked) {
+                try { await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] }); } catch(e) {}
+            }
 
             let numFrames = 10;
             let originalExp = currentExp;
@@ -483,6 +535,11 @@
 
             if (hwConstraintsSupported && (type === 'bias' || type === 'flat')) {
                 try { await videoTrack.applyConstraints({ advanced: [{ exposureMode: "manual", exposureTime: originalExp, iso: currentIso }] }); } catch(e) {}
+            }
+
+            // Przywróć focus do stanu z przed kalibracji, O ILE nie był ręcznie zablokowany
+            if (!wasFocusLockedBeforeCalib) {
+                try { await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch(e) {}
             }
 
             document.getElementById(`status${type.charAt(0).toUpperCase() + type.slice(1)}`).innerText = "Załadowano w pamięci";
