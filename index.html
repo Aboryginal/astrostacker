@@ -615,28 +615,160 @@
         }
 
         // --- RESZTA LOGIKI (UI, Zapis, Kalibracja bez zmian) ---
-        // (Wszystko działa jak poprzednio, skrócenie w podglądzie)
+
+        // --- NATYWNY GENERATOR PLIKÓW TIFF (RGB BEZSTRATNY) ---
+        function createTiffBlob(canvasEl) {
+            const ctxTiff = canvasEl.getContext('2d');
+            const imgData = ctxTiff.getImageData(0, 0, canvasEl.width, canvasEl.height);
+            const data = imgData.data;
+            const w = canvasEl.width;
+            const h = canvasEl.height;
+            const rgbSize = w * h * 3;
+
+            const offsetIFD = 8;
+            const entriesCount = 9;
+            const ifdSize = 2 + (entriesCount * 12) + 4;
+            const offsetBPS = offsetIFD + ifdSize; 
+            const offsetPixels = offsetBPS + 6; 
+
+            const buffer = new ArrayBuffer(offsetPixels + rgbSize);
+            const view = new DataView(buffer);
+            const u8 = new Uint8Array(buffer);
+
+            // Nagłówek 'II' (Little Endian)
+            view.setUint16(0, 0x4949, true);
+            view.setUint16(2, 42, true);
+            view.setUint32(4, offsetIFD, true);
+
+            // Katalog IFD
+            view.setUint16(offsetIFD, entriesCount, true);
+            let pos = offsetIFD + 2;
+
+            function writeEntry(tag, type, count, value) {
+                view.setUint16(pos, tag, true);
+                view.setUint16(pos + 2, type, true);
+                view.setUint32(pos + 4, count, true);
+                if (type === 3 && count === 1) { // SHORT
+                    view.setUint16(pos + 8, value, true);
+                    view.setUint16(pos + 10, 0, true);
+                } else if (type === 4 && count === 1) { // LONG
+                    view.setUint32(pos + 8, value, true);
+                } else { // Offset
+                    view.setUint32(pos + 8, value, true);
+                }
+                pos += 12;
+            }
+
+            writeEntry(256, 4, 1, w); // ImageWidth
+            writeEntry(257, 4, 1, h); // ImageLength
+            writeEntry(258, 3, 3, offsetBPS); // BitsPerSample offset
+            writeEntry(259, 3, 1, 1); // Compression (Brak kompresji)
+            writeEntry(262, 3, 1, 2); // PhotometricInterpretation (RGB)
+            writeEntry(273, 4, 1, offsetPixels); // StripOffsets
+            writeEntry(277, 3, 1, 3); // SamplesPerPixel
+            writeEntry(278, 4, 1, h); // RowsPerStrip
+            writeEntry(279, 4, 1, rgbSize); // StripByteCounts
+
+            view.setUint32(pos, 0, true); // Koniec IFD
+
+            // Ustawienia kanałów (8, 8, 8)
+            view.setUint16(offsetBPS, 8, true);
+            view.setUint16(offsetBPS + 2, 8, true);
+            view.setUint16(offsetBPS + 4, 8, true);
+
+            // Kopiowanie pikseli pomijając kanał Alpha
+            let p = offsetPixels;
+            for (let i = 0; i < data.length; i += 4) {
+                u8[p++] = data[i];     // R
+                u8[p++] = data[i+1];   // G
+                u8[p++] = data[i+2];   // B
+            }
+
+            return new Blob([buffer], { type: 'image/tiff' });
+        }
+
+        // --- OBSŁUGA UI ---
         
         btnToggle.addEventListener('click', () => {
-            if (!isStacking) { isStacking = true; isPaused = false; btnToggle.innerText = "PAUZA"; btnToggle.classList.add('active'); } 
-            else { if (!isPaused) { isPaused = true; btnToggle.innerText = "WZNÓW"; btnToggle.classList.remove('active'); } 
-            else { isPaused = false; trackPatch = null; btnToggle.innerText = "PAUZA"; btnToggle.classList.add('active'); } }
+            if (!isStacking) {
+                isStacking = true; isPaused = false;
+                btnToggle.innerText = "PAUZA / KOREKTA";
+                btnToggle.classList.add('active');
+            } else {
+                if (!isPaused) {
+                    isPaused = true;
+                    btnToggle.innerText = "WZNÓW STACK";
+                    btnToggle.classList.remove('active');
+                    statStatus.innerText = "PAUZA (PODGLĄD)";
+                } else {
+                    isPaused = false;
+                    trackPatch = null; 
+                    btnToggle.innerText = "PAUZA / KOREKTA";
+                    btnToggle.classList.add('active');
+                }
+            }
         });
 
         document.getElementById('btnReset').addEventListener('click', () => {
-            isStacking = false; isPaused = false; frameCount = 0; referenceCentroid = null; trackPatch = null; lastTrackX = 0; lastTrackY = 0;
+            isStacking = false; isPaused = false; frameCount = 0; referenceCentroid = null;
+            trackPatch = null; lastTrackX = 0; lastTrackY = 0;
             if(accumulator) accumulator.fill(0);
-            document.getElementById('stat-frames').innerText = "0"; btnToggle.innerText = "START STACK"; btnToggle.classList.remove('active');
+            document.getElementById('stat-frames').innerText = "0";
+            document.getElementById('stat-offset').innerText = "dx:0 dy:0";
+            btnToggle.innerText = "START STACK";
+            btnToggle.classList.remove('active');
+            statStatus.innerText = `GOTOWY (${canvasWidth}x${canvasHeight})`;
         });
 
+        document.getElementById('btnSave').addEventListener('click', () => {
+            if (frameCount === 0) return alert("Brak klatek do zapisania!");
+            if (isStacking) renderAccumulator();
+            
+            const format = selectSaveFormat.value;
+            statStatus.innerText = "GENEROWANIE ZAPISU...";
+            
+            setTimeout(() => {
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const baseName = `astro_stack_${modeSelect.value}_${frameCount}kl`;
+
+                if (format === 'png' || format === 'both') {
+                    const dataUrl = displayCanvas.toDataURL('image/png');
+                    const link = document.createElement('a');
+                    link.download = `${baseName}.png`;
+                    link.href = dataUrl;
+                    link.click();
+                }
+
+                if (format === 'tiff' || format === 'both') {
+                    const tiffBlob = createTiffBlob(displayCanvas);
+                    const dataUrl = URL.createObjectURL(tiffBlob);
+                    const link = document.createElement('a');
+                    link.download = `${baseName}.tiff`;
+                    link.href = dataUrl; 
+                    link.click();
+                    setTimeout(() => URL.revokeObjectURL(dataUrl), 1000); // Czyszczenie pamięci po zwłoce
+                }
+
+                statStatus.innerText = "ZAPISANO";
+            }, 100);
+        });
+
+        // Modale
+        const modalSettings = document.getElementById('modalSettings');
+        const modalCalib = document.getElementById('modalCalib');
+        
+        document.getElementById('btnSettings').onclick = () => modalSettings.classList.add('active');
+        document.getElementById('btnCalib').onclick = () => modalCalib.classList.add('active');
+        
         document.querySelectorAll('.close-modal').forEach(btn => {
             btn.onclick = (e) => e.target.closest('.modal').classList.remove('active');
         });
-        document.getElementById('btnSettings').onclick = () => document.getElementById('modalSettings').classList.add('active');
-        document.getElementById('btnCalib').onclick = () => document.getElementById('modalCalib').classList.add('active');
 
         window.onload = initCamera;
+        
+
 
     </script>
 </body>
 </html>
+
