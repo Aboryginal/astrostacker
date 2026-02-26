@@ -252,7 +252,9 @@
         let videoTrack = null;
         let capabilities = null;
         let hwConstraintsSupported = false;
+        
         let isFocusLocked = false;
+        let lockedFocusDistance = null; 
         
         let isStacking = false;
         let isPaused = false;
@@ -269,7 +271,6 @@
         const PATCH_SIZE = 80;
         const SEARCH_RADIUS = 30;
 
-        // Kontrola FPS (Wydajność)
         let targetFps = 15;
         let lastFrameTime = performance.now();
 
@@ -280,9 +281,9 @@
         let calibData = { dark: null, bias: null, flat: null, flatMean: 1.0 };
 
         const MODES = {
-            planet: { threshold: 200, minPixels: 50 },
-            moon:   { threshold: 120, minPixels: 500 },
-            dso:    { threshold: 240, minPixels: 5 }
+            planet: { threshold: 150, minPixels: 15 },
+            moon:   { threshold: 100, minPixels: 100 },
+            dso:    { threshold: 180, minPixels: 3 }
         };
 
         // --- ZMIENNE AI ---
@@ -291,9 +292,15 @@
         let modelLucky = null;
         let modelAlign = null;
 
-        // UI
+        // UI Elements (Ujednolicone deklaracje, naprawiony SyntaxError)
         const btnToggle = document.getElementById('btnToggle');
         const statStatus = document.getElementById('stat-status');
+        const statFocus = document.getElementById('stat-focus');
+        const modeSelect = document.getElementById('modeSelect');
+        const hwWarning = document.getElementById('hw-warning');
+        const btnLockFocus = document.getElementById('btnLockFocus');
+        const selectCrop = document.getElementById('selectCrop');
+        const selectSaveFormat = document.getElementById('selectSaveFormat');
         const selectFps = document.getElementById('selectFps');
         const toggleAiLucky = document.getElementById('toggleAiLucky');
         const toggleAiAlign = document.getElementById('toggleAiAlign');
@@ -321,8 +328,8 @@
                 
                 video.onloadedmetadata = () => {
                     nativeWidth = video.videoWidth; nativeHeight = video.videoHeight;
-                    document.getElementById('selectCrop').dispatchEvent(new Event('change'));
-                    applyCameraSettings();
+                    selectCrop.dispatchEvent(new Event('change'));
+                    applyCameraSettings(); 
                     requestAnimationFrame(processLoop);
                 };
             } catch (err) { statStatus.innerText = "BŁĄD KAMERY"; alert("Błąd kamery: " + err.message); }
@@ -331,8 +338,8 @@
         // --- FPS & CROP ---
         selectFps.addEventListener('change', (e) => { targetFps = parseInt(e.target.value); });
 
-        document.getElementById('selectCrop').addEventListener('change', () => {
-            const scale = parseFloat(document.getElementById('selectCrop').value);
+        selectCrop.addEventListener('change', () => {
+            const scale = parseFloat(selectCrop.value);
             canvasWidth = Math.floor(nativeWidth * scale); canvasHeight = Math.floor(nativeHeight * scale);
             displayCanvas.width = canvasWidth; displayCanvas.height = canvasHeight;
             offscreenCanvas.width = canvasWidth; offscreenCanvas.height = canvasHeight;
@@ -354,13 +361,11 @@
         }
 
         // --- OBSŁUGA TENSORFLOW.JS (Sztuczna Inteligencja) ---
-        
         toggleAiLucky.addEventListener('change', async (e) => {
             useAiLucky = e.target.checked;
             if (useAiLucky && !modelLucky) {
                 statStatus.innerText = "ŁADOWANIE AI (Lucky)...";
                 try {
-                    // Oczekuje pliku w podfolderze na serwerze (Zastąp to prawdziwym modelem wyeksportowanym z Teachable Machine)
                     modelLucky = await tf.loadLayersModel('./models/lucky_ai/model.json'); 
                     statStatus.innerText = "AI Lucky: ZAINICJOWANE";
                 } catch(err) {
@@ -376,67 +381,298 @@
             if (useAiAlign && !modelAlign) {
                 statStatus.innerText = "ŁADOWANIE AI (Align)...";
                 try {
-                    // Oczekuje modelu estymacji Optical Flow (Zastąp właściwym modelem)
                     modelAlign = await tf.loadGraphModel('./models/flow_ai/model.json'); 
                     statStatus.innerText = "AI Flow: ZAINICJOWANE";
                 } catch(err) {
-                    alert("Brak plików modelu AI Optical Flow w folderze ./models/flow_ai/. Aplikacja powróci do klasycznego i bardzo szybkiego algorytmu SAD (Template Matching).");
+                    alert("Brak plików modelu AI Optical Flow w folderze ./models/flow_ai/.");
                     useAiAlign = false; e.target.checked = false;
                     statStatus.innerText = `GOTOWY (${canvasWidth}x${canvasHeight})`;
                 }
             }
         });
 
-        // Pipeline AI do oceny jakości klatki (Lucky Imaging)
         async function runAILuckyImaging(ctx, canvasEl) {
-            if (!modelLucky) return true; // Fail-safe
+            if (!modelLucky) return true;
             return tf.tidy(() => {
-                // Pobieramy i skalujemy obraz pod typowy wejściowy format sieci (np. 224x224)
                 const imgTensor = tf.browser.fromPixels(canvasEl);
                 const resized = tf.image.resizeBilinear(imgTensor, [224, 224]);
                 const normalized = resized.div(255.0).expandDims(0);
-                
                 const prediction = modelLucky.predict(normalized);
-                const score = prediction.dataSync()[0]; // Zakładamy że sieć zwraca wartość 0(Zła) - 1(Dobra)
-                return score > 0.5; // Zwracamy bool: Akceptuj lub Odrzuć
+                const score = prediction.dataSync()[0]; 
+                return score > 0.5; 
             });
         }
 
-        // Pipeline AI do obliczania wektora przesunięcia
         async function runAIOpticalFlow(refPatch, currPatch, size) {
             if(!modelAlign) return {dx: 0, dy: 0};
             return tf.tidy(() => {
-                // Budujemy tensor z dwóch połączonych wycinków obrazu i prosimy AI o przewidzenie DX/DY
                 const tRef = tf.tensor3d(refPatch, [size, size, 1]);
                 const tCurr = tf.tensor3d(currPatch, [size, size, 1]);
                 const stacked = tf.concat([tRef, tCurr], 2).expandDims(0).div(255.0);
-                
                 const prediction = modelAlign.predict(stacked);
                 const flow = prediction.dataSync(); 
                 return { dx: flow[0], dy: flow[1], sad: 0 }; 
             });
         }
 
-
-        // --- KAMERA SETTINGS & CALIBRATION (Z klasycznej aplikacji) ---
-        async function applyCameraSettings() {
-            if (!videoTrack) return;
-            currentIso = parseFloat(document.getElementById('sliderIso').value); currentExp = parseFloat(document.getElementById('sliderExp').value); softwareGain = parseFloat(document.getElementById('sliderGain').value);
-            document.getElementById('valIso').innerText = currentIso; document.getElementById('valExp').innerText = currentExp + "ms"; document.getElementById('valGain').innerText = softwareGain.toFixed(1) + "x";
-            try { await videoTrack.applyConstraints({ advanced: [{ exposureMode: "manual", iso: currentIso, exposureTime: currentExp }] }); hwConstraintsSupported = true; document.getElementById('hw-warning').style.display = 'none'; } 
-            catch (e) { hwConstraintsSupported = false; document.getElementById('hw-warning').style.display = 'block'; }
+        // --- KAMERA SETTINGS & STABILIZACJA CONSTRAINTS (Naprawa ostrości) ---
+        function setupCameraSliders() {
+            if(!capabilities) return;
+            const sIso = document.getElementById('sliderIso');
+            const sExp = document.getElementById('sliderExp');
+            if (capabilities.iso) { sIso.min = capabilities.iso.min; sIso.max = capabilities.iso.max; sIso.step = capabilities.iso.step || 100; }
+            if (capabilities.exposureTime) { sExp.min = 1; sExp.max = 1000; }
         }
-        document.getElementById('sliderIso').addEventListener('input', applyCameraSettings); document.getElementById('sliderExp').addEventListener('input', applyCameraSettings); document.getElementById('sliderGain').addEventListener('input', applyCameraSettings);
 
-        // ... Reszta obsługi przycisków (zoptymalizowane, bez zmian względem poprzednich blokad focusu)
-        document.getElementById('btnLockFocus').addEventListener('click', async () => {
+        async function applyAllConstraints() {
+            if (!videoTrack) return;
+            let adv = {};
+
+            adv.exposureMode = "manual";
+            adv.iso = currentIso;
+            adv.exposureTime = currentExp;
+
+            if (isFocusLocked) {
+                adv.focusMode = "manual";
+                if (lockedFocusDistance !== null && lockedFocusDistance !== undefined) {
+                    adv.focusDistance = lockedFocusDistance;
+                }
+            } else {
+                adv.focusMode = "continuous";
+            }
+
+            try {
+                await videoTrack.applyConstraints({ advanced: [adv] });
+                hwConstraintsSupported = true;
+                hwWarning.style.display = 'none';
+            } catch (e) {
+                hwConstraintsSupported = false;
+                hwWarning.style.display = 'block';
+
+                if (isFocusLocked) {
+                    let focusFallback = { focusMode: "manual" };
+                    if (lockedFocusDistance !== null && lockedFocusDistance !== undefined) {
+                        focusFallback.focusDistance = lockedFocusDistance;
+                    }
+                    await videoTrack.applyConstraints({ advanced: [focusFallback] }).catch(()=>{});
+                } else {
+                    await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(()=>{});
+                }
+            }
+        }
+
+        async function applyCameraSettings() {
+            currentIso = parseFloat(document.getElementById('sliderIso').value); 
+            currentExp = parseFloat(document.getElementById('sliderExp').value); 
+            softwareGain = parseFloat(document.getElementById('sliderGain').value);
+            document.getElementById('valIso').innerText = currentIso; 
+            document.getElementById('valExp').innerText = currentExp + "ms"; 
+            document.getElementById('valGain').innerText = softwareGain.toFixed(1) + "x";
+            
+            await applyAllConstraints();
+        }
+
+        document.getElementById('sliderIso').addEventListener('input', applyCameraSettings); 
+        document.getElementById('sliderExp').addEventListener('input', applyCameraSettings); 
+        document.getElementById('sliderGain').addEventListener('input', applyCameraSettings);
+
+        btnLockFocus.addEventListener('click', async () => {
             if (!videoTrack) return;
             isFocusLocked = !isFocusLocked;
             try {
-                if(isFocusLocked) { await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual", focusDistance: videoTrack.getSettings().focusDistance }] }).catch(()=>videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] })); document.getElementById('btnLockFocus').innerText = "ODBLOKUJ FOCUS"; document.getElementById('btnLockFocus').classList.add('active'); } 
-                else { await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); document.getElementById('btnLockFocus').innerText = "ZABLOKUJ FOCUS"; document.getElementById('btnLockFocus').classList.remove('active'); }
+                if(isFocusLocked) {
+                    const settings = videoTrack.getSettings();
+                    lockedFocusDistance = settings.focusDistance !== undefined ? settings.focusDistance : null;
+                    await applyAllConstraints();
+                    btnLockFocus.innerText = "ODBLOKUJ FOCUS"; 
+                    btnLockFocus.classList.add('active'); 
+                } else {
+                    lockedFocusDistance = null;
+                    await applyAllConstraints();
+                    btnLockFocus.innerText = "ZABLOKUJ FOCUS"; 
+                    btnLockFocus.classList.remove('active'); 
+                }
             } catch (e) { isFocusLocked = false; }
         });
+
+        document.getElementById('btnHwFocus').addEventListener('click', async () => {
+            if (!videoTrack) return;
+            try {
+                await videoTrack.applyConstraints({ advanced: [{ focusMode: "single-shot" }] });
+                setTimeout(async () => {
+                    try {
+                        if (isFocusLocked) {
+                            const settings = videoTrack.getSettings();
+                            lockedFocusDistance = settings.focusDistance !== undefined ? settings.focusDistance : null;
+                        }
+                        await applyAllConstraints();
+                    } catch(err) {}
+                }, 2000);
+            } catch (e) { alert("Autofocus sprzętowy nieobsługiwany."); }
+        });
+
+        document.getElementById('btnAutoParams').addEventListener('click', () => {
+            captureVideoToOffscreen();
+            const data = offscreenCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
+            let sum = 0;
+            for(let i=0; i<data.length; i+=16) sum += (data[i] + data[i+1] + data[i+2]) / 3;
+            const mean = sum / (canvasWidth * canvasHeight / 4);
+            if (mean < 30) softwareGain = Math.min(10, softwareGain + 1.0);
+            else if (mean > 150) softwareGain = Math.max(1, softwareGain - 0.5);
+            document.getElementById('sliderGain').value = softwareGain;
+            applyCameraSettings();
+        });
+
+
+        // --- KALIBRACJA (DARK, BIAS, FLAT) ---
+        async function autoExposeForFlat() {
+            if (!hwConstraintsSupported || !capabilities || !capabilities.exposureTime) return;
+            let exp = currentExp; let targetMean = 128; let tolerance = 15; let maxIter = 10;
+            for (let i = 0; i < maxIter; i++) {
+                captureVideoToOffscreen();
+                const data = offscreenCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
+                let sum = 0;
+                for(let j=0; j<data.length; j+=16) sum += data[j]*0.299 + data[j+1]*0.587 + data[j+2]*0.114;
+                let mean = sum / (canvasWidth * canvasHeight / 4);
+                if (Math.abs(mean - targetMean) < tolerance) break;
+                
+                let ratio = targetMean / Math.max(mean, 1);
+                exp = exp * ratio;
+                exp = Math.max(capabilities.exposureTime.min || 1, Math.min(capabilities.exposureTime.max || 1000, exp));
+                
+                currentExp = exp;
+                await applyAllConstraints();
+                await new Promise(r => setTimeout(r, 400));
+            }
+        }
+
+        async function captureCalibrationFrame(type) {
+            if (!videoTrack) return;
+            try {
+                let wasFocusLockedBeforeCalib = isFocusLocked;
+                if (!isFocusLocked) {
+                    try { await videoTrack.applyConstraints({ advanced: [{ focusMode: "manual" }] }); } catch(e) {}
+                }
+
+                let numFrames = 10;
+                let originalExp = currentExp;
+
+                if (type === 'dark') {
+                    numFrames = 40;
+                    statStatus.innerText = `NAGRYWANIE DARK (${numFrames} kl)...`;
+                } else if (type === 'bias') {
+                    numFrames = 16;
+                    statStatus.innerText = `USTAWIANIE MIN CZASU...`;
+                    if (hwConstraintsSupported && capabilities && capabilities.exposureTime) {
+                        currentExp = capabilities.exposureTime.min || 1;
+                        await applyAllConstraints();
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+                    statStatus.innerText = `NAGRYWANIE BIAS (${numFrames} kl)...`;
+                } else if (type === 'flat') {
+                    numFrames = 32;
+                    statStatus.innerText = `DOSTRAJANIE HISTOGRAMU (50%)...`;
+                    await autoExposeForFlat();
+                    statStatus.innerText = `NAGRYWANIE FLAT (${numFrames} kl)...`;
+                }
+
+                let calibAcc = new Float32Array(canvasWidth * canvasHeight * 4);
+                let activeDigitalGain = hwConstraintsSupported ? 1.0 : (currentIso / 800) * (currentExp / 30);
+
+                for(let f=0; f<numFrames; f++) {
+                    await new Promise(r => setTimeout(r, 100)); 
+                    captureVideoToOffscreen();
+                    const data = offscreenCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
+                    for(let i=0; i<data.length; i++) calibAcc[i] += data[i] * activeDigitalGain;
+                    statStatus.innerText = `${type.toUpperCase()} (${f+1}/${numFrames})`;
+                }
+                
+                const finalData = new Uint8ClampedArray(calibAcc.length);
+                let flatSum = 0;
+                for(let i=0; i<finalData.length; i+=4) {
+                    finalData[i]   = Math.min(255, calibAcc[i] / numFrames);
+                    finalData[i+1] = Math.min(255, calibAcc[i+1] / numFrames);
+                    finalData[i+2] = Math.min(255, calibAcc[i+2] / numFrames);
+                    finalData[i+3] = 255;
+                    if(type === 'flat') flatSum += (finalData[i] + finalData[i+1] + finalData[i+2]) / 3;
+                }
+
+                calibData[type] = calibAcc.map(v => v / numFrames);
+                if(type === 'flat') calibData.flatMean = flatSum / (canvasWidth * canvasHeight);
+
+                if (hwConstraintsSupported && (type === 'bias' || type === 'flat')) {
+                    currentExp = originalExp;
+                    await applyAllConstraints();
+                }
+
+                document.getElementById(`status${type.charAt(0).toUpperCase() + type.slice(1)}`).innerText = "Załadowano w pamięci";
+                statStatus.innerText = "GOTOWY";
+
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = canvasWidth; tempCanvas.height = canvasHeight;
+                const tCtx = tempCanvas.getContext('2d');
+                tCtx.putImageData(new ImageData(finalData, canvasWidth, canvasHeight), 0, 0);
+                
+                tempCanvas.toBlob((blob) => {
+                    const dataUrl = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.download = `${type}_ISO${currentIso}_${originalExp}ms.png`;
+                    link.href = dataUrl;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    setTimeout(() => URL.revokeObjectURL(dataUrl), 5000);
+                }, 'image/png');
+            } catch (err) {
+                console.error(err);
+                alert("Błąd podczas generowania klatki: " + err.message);
+                statStatus.innerText = "BŁĄD KALIBRACJI";
+            }
+        }
+
+        function handleFileUpload(event, type) {
+            const file = event.target.files[0];
+            if(!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    const tCanvas = document.createElement('canvas');
+                    tCanvas.width = canvasWidth; tCanvas.height = canvasHeight;
+                    const tCtx = tCanvas.getContext('2d');
+                    tCtx.drawImage(img, 0, 0, canvasWidth, canvasHeight);
+                    const data = tCtx.getImageData(0, 0, canvasWidth, canvasHeight).data;
+                    calibData[type] = new Float32Array(data);
+                    if(type === 'flat') {
+                        let flatSum = 0;
+                        for(let i=0; i<data.length; i+=4) flatSum += (data[i]+data[i+1]+data[i+2])/3;
+                        calibData.flatMean = flatSum / (canvasWidth * canvasHeight);
+                    }
+                    document.getElementById(`status${type.charAt(0).toUpperCase() + type.slice(1)}`).innerText = "Wczytano plik";
+                }
+                img.src = e.target.result;
+            }
+            reader.readAsDataURL(file);
+        }
+
+        document.getElementById('btnCreateDark').onclick = () => captureCalibrationFrame('dark');
+        document.getElementById('btnCreateBias').onclick = () => captureCalibrationFrame('bias');
+        document.getElementById('btnCreateFlat').onclick = () => captureCalibrationFrame('flat');
+        
+        document.getElementById('btnLoadDark').onclick = () => document.getElementById('fileDark').click();
+        document.getElementById('btnLoadBias').onclick = () => document.getElementById('fileBias').click();
+        document.getElementById('btnLoadFlat').onclick = () => document.getElementById('fileFlat').click();
+        
+        document.getElementById('fileDark').onchange = (e) => handleFileUpload(e, 'dark');
+        document.getElementById('fileBias').onchange = (e) => handleFileUpload(e, 'bias');
+        document.getElementById('fileFlat').onchange = (e) => handleFileUpload(e, 'flat');
+
+        document.getElementById('btnClearCalib').onclick = () => {
+            calibData = { dark: null, bias: null, flat: null, flatMean: 1.0 };
+            document.querySelectorAll('[id^="status"]').forEach(el => {
+                if(el.id !== 'stat-status' && el.id !== 'stat-frames' && el.id !== 'stat-offset' && el.id !== 'stat-focus') el.innerText = "Brak";
+            });
+        };
 
         // --- MATEMATYKA KLASYCZNA (SAD) ---
         function getPatch(lumaData, cx, cy, size) {
@@ -486,9 +722,9 @@
         
         function calculateCentroid(lumaData, modeParams) {
             let sumX = 0, sumY = 0, count = 0; const threshold = modeParams.threshold;
-            for (let y = 0; y < canvasHeight; y += 4) {
+            for (let y = 0; y < canvasHeight; y += 2) {
                 let rowOffset = y * canvasWidth;
-                for (let x = 0; x < canvasWidth; x += 4) { if (lumaData[rowOffset + x] > threshold) { sumX += x; sumY += y; count++; } }
+                for (let x = 0; x < canvasWidth; x += 2) { if (lumaData[rowOffset + x] > threshold) { sumX += x; sumY += y; count++; } }
             }
             if (count < modeParams.minPixels) return null;
             return { x: Math.round(sumX / count), y: Math.round(sumY / count) };
@@ -496,7 +732,6 @@
 
         // --- GŁÓWNA PĘTLA (Z limiterem FPS i obsługą AI) ---
         async function processLoop() {
-            // Limiter FPS
             const now = performance.now();
             if (targetFps > 0 && (now - lastFrameTime) < (1000 / targetFps)) {
                 requestAnimationFrame(processLoop);
@@ -533,7 +768,6 @@
                 return;
             }
 
-            // *** AI LUCKY IMAGING CHECK ***
             if (useAiLucky && modelLucky) {
                 const isGoodFrame = await runAILuckyImaging(offscreenCtx, offscreenCanvas);
                 if (!isGoodFrame) {
@@ -544,7 +778,7 @@
                 }
             }
 
-            const modeKey = document.getElementById('modeSelect').value;
+            const modeKey = modeSelect.value;
             
             if (frameCount === 0) {
                 referenceCentroid = calculateCentroid(lumaFrame, MODES[modeKey]);
@@ -558,8 +792,6 @@
                 lastTrackX = currentPos.x; lastTrackY = currentPos.y;
                 statStatus.innerText = "ZŁAPANO OBIEKT!";
             } else {
-                
-                // *** ALIGNMENT (AI vs Klasyczny SAD) ***
                 let match;
                 if (useAiAlign && modelAlign) {
                     let currentPatchForAI = getPatch(lumaFrame, lastTrackX, lastTrackY, PATCH_SIZE);
@@ -613,8 +845,6 @@
             }
             ctx.putImageData(renderData, 0, 0);
         }
-
-        // --- RESZTA LOGIKI (UI, Zapis, Kalibracja bez zmian) ---
 
         // --- NATYWNY GENERATOR PLIKÓW TIFF (RGB BEZSTRATNY) ---
         function createTiffBlob(canvasEl) {
@@ -687,37 +917,17 @@
             return new Blob([buffer], { type: 'image/tiff' });
         }
 
-        // --- OBSŁUGA UI ---
-        
+        // --- OBSŁUGA GŁÓWNEGO ZAPISU I PRZYCISKÓW ---
         btnToggle.addEventListener('click', () => {
-            if (!isStacking) {
-                isStacking = true; isPaused = false;
-                btnToggle.innerText = "PAUZA / KOREKTA";
-                btnToggle.classList.add('active');
-            } else {
-                if (!isPaused) {
-                    isPaused = true;
-                    btnToggle.innerText = "WZNÓW STACK";
-                    btnToggle.classList.remove('active');
-                    statStatus.innerText = "PAUZA (PODGLĄD)";
-                } else {
-                    isPaused = false;
-                    trackPatch = null; 
-                    btnToggle.innerText = "PAUZA / KOREKTA";
-                    btnToggle.classList.add('active');
-                }
-            }
+            if (!isStacking) { isStacking = true; isPaused = false; btnToggle.innerText = "PAUZA"; btnToggle.classList.add('active'); } 
+            else { if (!isPaused) { isPaused = true; btnToggle.innerText = "WZNÓW"; btnToggle.classList.remove('active'); } 
+            else { isPaused = false; trackPatch = null; btnToggle.innerText = "PAUZA"; btnToggle.classList.add('active'); } }
         });
 
         document.getElementById('btnReset').addEventListener('click', () => {
-            isStacking = false; isPaused = false; frameCount = 0; referenceCentroid = null;
-            trackPatch = null; lastTrackX = 0; lastTrackY = 0;
+            isStacking = false; isPaused = false; frameCount = 0; referenceCentroid = null; trackPatch = null; lastTrackX = 0; lastTrackY = 0;
             if(accumulator) accumulator.fill(0);
-            document.getElementById('stat-frames').innerText = "0";
-            document.getElementById('stat-offset').innerText = "dx:0 dy:0";
-            btnToggle.innerText = "START STACK";
-            btnToggle.classList.remove('active');
-            statStatus.innerText = `GOTOWY (${canvasWidth}x${canvasHeight})`;
+            document.getElementById('stat-frames').innerText = "0"; btnToggle.innerText = "START STACK"; btnToggle.classList.remove('active');
         });
 
         document.getElementById('btnSave').addEventListener('click', () => {
@@ -729,24 +939,35 @@
             
             setTimeout(() => {
                 const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                const baseName = `astro_stack_${modeSelect.value}_${frameCount}kl`;
+                const baseName = `astro_stack_${modeSelect.value}_${frameCount}kl_${timestamp}`;
 
                 if (format === 'png' || format === 'both') {
-                    const dataUrl = displayCanvas.toDataURL('image/png');
-                    const link = document.createElement('a');
-                    link.download = `${baseName}.png`;
-                    link.href = dataUrl;
-                    link.click();
+                    displayCanvas.toBlob((blob) => {
+                        const dataUrl = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.download = `${baseName}.png`;
+                        link.href = dataUrl;
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        setTimeout(() => URL.revokeObjectURL(dataUrl), 5000);
+                    }, 'image/png');
                 }
 
                 if (format === 'tiff' || format === 'both') {
-                    const tiffBlob = createTiffBlob(displayCanvas);
-                    const dataUrl = URL.createObjectURL(tiffBlob);
-                    const link = document.createElement('a');
-                    link.download = `${baseName}.tiff`;
-                    link.href = dataUrl; 
-                    link.click();
-                    setTimeout(() => URL.revokeObjectURL(dataUrl), 1000); // Czyszczenie pamięci po zwłoce
+                    try {
+                        const tiffBlob = createTiffBlob(displayCanvas);
+                        const dataUrl = URL.createObjectURL(tiffBlob);
+                        const link = document.createElement('a');
+                        link.download = `${baseName}.tiff`;
+                        link.href = dataUrl; 
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        setTimeout(() => URL.revokeObjectURL(dataUrl), 5000); 
+                    } catch(e) {
+                        alert("Błąd zapisu TIFF: " + e.message);
+                    }
                 }
 
                 statStatus.innerText = "ZAPISANO";
@@ -765,10 +986,7 @@
         });
 
         window.onload = initCamera;
-        
-
 
     </script>
 </body>
 </html>
-
